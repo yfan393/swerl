@@ -62,15 +62,28 @@ def train(config_path: str) -> None:
     
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
-    max_steps = config.get("grpo", {}).get("max_steps", 300)
-    num_train_epochs = config.get("grpo", {}).get("num_train_epochs", 1)
+    grpo_cfg = config.get("grpo", {})
+    log_cfg = config.get("logging", {})
+
+    max_steps = grpo_cfg.get("max_steps", 300)
+    num_train_epochs = grpo_cfg.get("num_train_epochs", 1)
 
     grpo_config = GRPOConfig(
         output_dir=output_dir,
         max_steps=max_steps,
         num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 32),
-        learning_rate=config.get("training", {}).get("learning_rate", 5e-5),
+        per_device_train_batch_size=grpo_cfg.get("per_device_train_batch_size", config.get("training", {}).get("per_device_train_batch_size", 32)),
+        learning_rate=grpo_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 5e-5)),
+        gradient_accumulation_steps=grpo_cfg.get("gradient_accumulation_steps", 1),
+        logging_steps=grpo_cfg.get("logging_steps", 10),
+        save_steps=grpo_cfg.get("save_steps", 100),
+        report_to=log_cfg.get("report_to", "none"),
+        lr_scheduler_type=grpo_cfg.get("lr_scheduler", "linear"),
+        warmup_steps=grpo_cfg.get("warmup_steps", 0),
+        max_grad_norm=grpo_cfg.get("max_grad_norm", 1.0),
+        weight_decay=grpo_cfg.get("weight_decay", 0.0),
+        bf16=False,
+        fp16=False,
     )
 
     # Load reward config
