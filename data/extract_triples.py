@@ -5,10 +5,10 @@ Converts filtered PR records into training triples:
     (problem_statement, code_context, oracle_patch)
 
 For each filtered PR:
-  1. Clone (or fetch) the base commit of the repo
-  2. For each Python file changed in the PR, read the pre-patch content
-  3. Build code_context by concatenating file contents (respecting token budget)
-  4. Store the oracle_patch (the actual diff)
+  1. Extract pre-patch file contents directly from the oracle_patch (unified diff)
+  2. Build code_context by concatenating file contents (respecting token budget)
+  3. Apply patch to compute oracle_new_content (post-patch file contents)
+  4. Validate patch application and syntax
   5. Select a random 10k subset and split train/val
 
 Also computes oracle_new_content (post-patch file contents) needed by the reward function.
@@ -25,6 +25,7 @@ import argparse
 import logging
 import os
 import random
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +38,6 @@ from utils.git_utils import (
     check_code_differ_by_just_empty_lines,
 )
 from utils.io_utils import read_jsonl, write_jsonl
-from utils.repo_utils import ensure_repo_cloned, read_file_at_commit
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -69,6 +69,76 @@ def build_full_code_context(file_contents: dict[str, str], max_chars: int = MAX_
     return "\n\n".join(parts)
 
 
+def extract_files_from_patch(patch: str) -> dict[str, str]:
+    """
+    Extract pre-patch file contents directly from unified diff format.
+
+    Returns dict mapping file_path -> original content.
+    This avoids git operations and directly parses the diff.
+    """
+    files = {}
+    current_file = None
+    current_content = []
+    in_file_diff = False
+
+    for line in patch.split('\n'):
+        # Match: diff --git a/path/to/file b/path/to/file
+        if line.startswith('diff --git'):
+            # Save previous file if any
+            if current_file is not None and current_content:
+                files[current_file] = '\n'.join(current_content)
+
+            # Extract path: "a/path/to/file" -> "path/to/file"
+            match = re.search(r'^diff --git a/(.+?) b/.+?$', line)
+            if match:
+                current_file = match.group(1)
+                current_content = []
+                in_file_diff = True
+            else:
+                current_file = None
+                in_file_diff = False
+
+        # Skip git metadata lines (---, +++, index, new file, deleted file, etc.)
+        elif line.startswith(('---', '+++', 'index ', 'new file', 'deleted file', 'similarity', 'rename')):
+            continue
+
+        # Skip diff hunk headers (@@)
+        elif line.startswith('@@'):
+            continue
+
+        # Skip "\ No newline at end of file"
+        elif line.startswith('\\'):
+            continue
+
+        # Context lines start with space - include content after the space
+        elif in_file_diff and line.startswith(' ') and current_file is not None:
+            # Strip the leading space to get original content
+            current_content.append(line[1:])
+
+        # Removed lines start with '-' - include content after the '-'
+        # These are part of the original file (pre-patch)
+        elif in_file_diff and line.startswith('-') and current_file is not None:
+            # Only include if it's a removed line (not a diff header like "---")
+            if not line.startswith('---'):
+                current_content.append(line[1:])
+
+        # Added lines start with '+' - skip these, they're post-patch
+        elif in_file_diff and line.startswith('+'):
+            if not line.startswith('+++'):
+                # This is new content added by the patch, skip it
+                pass
+
+        # Empty lines (just a newline)
+        elif in_file_diff and line == '' and current_file is not None:
+            current_content.append('')
+
+    # Don't forget the last file
+    if current_file is not None and current_content:
+        files[current_file] = '\n'.join(current_content)
+
+    return files
+
+
 def extract_triple(
     record: dict,
     repo_cache_dir: str,
@@ -76,30 +146,25 @@ def extract_triple(
     """
     For a single filtered PR record, build the (issue, code_ctx, oracle_patch) triple.
     Also computes oracle_new_content for reward calculation.
+
+    Extracts pre-patch file contents directly from the oracle_patch (unified diff),
+    avoiding git operations entirely.
     """
-    repo = record["repo"]
-    base_sha = record.get("base_sha", "")
-    python_files = record.get("python_files", [])
+    instance_id = record.get("instance_id")
+    repo = record.get("repo", "")
     oracle_patch = record.get("oracle_patch", "")
+    problem_statement = record.get("problem_statement", "")
 
-    if not base_sha or not python_files or not oracle_patch:
+    if not oracle_patch or not problem_statement:
+        logger.warning(f"Record {instance_id} missing oracle_patch or problem_statement")
         return None
 
-    # Ensure repo is cloned
-    try:
-        repo_path = ensure_repo_cloned(repo, repo_cache_dir)
-    except RuntimeError as e:
-        logger.warning("%s", e)
-        return None
-
-    # Read each Python file at base commit
-    file_contents: dict[str, str] = {}
-    for fpath in python_files:
-        content = read_file_at_commit(repo_path, base_sha, fpath)
-        if content is not None:
-            file_contents[fpath] = content
+    # Extract file contents directly from the patch
+    # This avoids git operations and uses the patch as the source of truth
+    file_contents = extract_files_from_patch(oracle_patch)
 
     if not file_contents:
+        logger.warning(f"No files extracted from patch for {instance_id}")
         return None
 
     # ── Apply the oracle patch via `git apply` (robust to whitespace quirks) ──
@@ -114,7 +179,7 @@ def extract_triple(
             patch=oracle_patch,
         )
     except Exception as e:
-        logger.debug(f"fake_git_apply_multiple failed for {record.get('instance_id')}: {e}")
+        logger.debug(f"fake_git_apply_multiple failed for {instance_id}: {e}")
         return None
 
     # Only keep files that actually changed and have valid Python syntax
@@ -124,28 +189,31 @@ def extract_triple(
         if new_content == original:
             continue   # patch didn't touch this file
         if not check_syntax(new_content):
+            logger.debug(f"Skipping {fpath} in {instance_id}: broken syntax after patch")
             continue   # broken output — skip
         if check_code_differ_by_just_empty_lines([new_content], [original]):
+            logger.debug(f"Skipping {fpath} in {instance_id}: only whitespace changes")
             continue   # trivial whitespace-only change — not useful for training
         oracle_new_content[fpath] = new_content
 
     if not oracle_new_content:
         # Patch applied but produced no meaningful Python changes — skip
+        logger.debug(f"No meaningful changes for {instance_id} after patch application")
         return None
 
     code_context = build_full_code_context(file_contents)
 
     return {
-        "instance_id": record["instance_id"],
+        "instance_id": instance_id,
         "repo": repo,
-        "pr_number": record["pr_number"],
+        "pr_number": record.get("pr_number"),
         "issue_number": record.get("issue_number"),
-        "problem_statement": record["problem_statement"],
+        "problem_statement": problem_statement,
         "code_context": code_context,
         "file_contents": file_contents,          # path -> original content
         "oracle_new_content": oracle_new_content, # path -> patched content
         "oracle_patch": oracle_patch,
-        "python_files": python_files,
+        "python_files": list(file_contents.keys()),  # Files actually extracted
         "merged_at": record.get("merged_at", ""),
     }
 
