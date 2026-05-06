@@ -69,7 +69,7 @@ def train(config_path: str) -> None:
         output_dir=output_dir,
         max_steps=max_steps,
         num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 4),
+        per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 32),
         learning_rate=config.get("training", {}).get("learning_rate", 5e-5),
     )
     
