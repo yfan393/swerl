@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import logging
 from pathlib import Path
 
@@ -40,6 +41,39 @@ from utils.io_utils import read_jsonl, read_yaml
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def enable_gradient_checkpointing_for_lora(model) -> None:
+    """
+    Keep the computation graph connected when gradient checkpointing is used
+    with LoRA adapters on a frozen base model.
+    """
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+        return
+
+    input_embeddings = model.get_input_embeddings()
+
+    def make_inputs_require_grad(_module, _inputs, output):
+        output.requires_grad_(True)
+
+    input_embeddings.register_forward_hook(make_inputs_require_grad)
+
+
+def gradient_checkpointing_kwargs() -> dict:
+    return {"use_reentrant": False}
+
+
+def enable_model_gradient_checkpointing(model) -> None:
+    if not hasattr(model, "gradient_checkpointing_enable"):
+        return
+
+    try:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs()
+        )
+    except TypeError:
+        model.gradient_checkpointing_enable()
 
 
 def validate_config(cfg: dict, config_path: str) -> None:
@@ -204,32 +238,34 @@ def train_sft(config_path: str):
     model.print_trainable_parameters()
     model.config.use_cache = False
 
-    # Enable gradient checkpointing if not using 4-bit
-    if not model_cfg.get("load_in_4bit", False):
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
+    enable_gradient_checkpointing_for_lora(model)
+    enable_model_gradient_checkpointing(model)
 
     # Ensure model is in training mode
     model.train()
 
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        max_steps=sft_cfg.get("max_steps", 2000),
-        per_device_train_batch_size=sft_cfg.get("per_device_train_batch_size", 2),
-        gradient_accumulation_steps=sft_cfg.get("gradient_accumulation_steps", 8),
-        learning_rate=sft_cfg.get("learning_rate", 2e-5),
-        lr_scheduler_type=sft_cfg.get("lr_scheduler", "cosine"),
-        warmup_steps=sft_cfg.get("warmup_steps", 50),
-        bf16=use_bf16,
-        fp16=use_fp16,
-        gradient_checkpointing=True,
-        save_steps=200,
-        logging_steps=10,
-        report_to=log_cfg.get("report_to", "none"),
-        run_name=log_cfg.get("wandb_run_name", "sft-baseline") + "-sft",
-        remove_unused_columns=False,
-        dataloader_num_workers=0,
-    )
+    training_args_kwargs = {
+        "output_dir": output_dir,
+        "max_steps": sft_cfg.get("max_steps", 2000),
+        "per_device_train_batch_size": sft_cfg.get("per_device_train_batch_size", 2),
+        "gradient_accumulation_steps": sft_cfg.get("gradient_accumulation_steps", 8),
+        "learning_rate": sft_cfg.get("learning_rate", 2e-5),
+        "lr_scheduler_type": sft_cfg.get("lr_scheduler", "cosine"),
+        "warmup_steps": sft_cfg.get("warmup_steps", 50),
+        "bf16": use_bf16,
+        "fp16": use_fp16,
+        "gradient_checkpointing": True,
+        "save_steps": 200,
+        "logging_steps": 10,
+        "report_to": log_cfg.get("report_to", "none"),
+        "run_name": log_cfg.get("wandb_run_name", "sft-baseline") + "-sft",
+        "remove_unused_columns": False,
+        "dataloader_num_workers": 0,
+    }
+    if "gradient_checkpointing_kwargs" in inspect.signature(TrainingArguments).parameters:
+        training_args_kwargs["gradient_checkpointing_kwargs"] = gradient_checkpointing_kwargs()
+
+    training_args = TrainingArguments(**training_args_kwargs)
 
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
