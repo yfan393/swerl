@@ -93,7 +93,6 @@ def train(config_path: str) -> None:
         model=model,
         args=grpo_config,
         train_dataset=train_dataset,
-        tokenizer=tokenizer,
         reward_funcs=reward_fn,
     )
     
