@@ -252,8 +252,8 @@ def train_sft(config_path: str):
         "learning_rate": sft_cfg.get("learning_rate", 2e-5),
         "lr_scheduler_type": sft_cfg.get("lr_scheduler", "cosine"),
         "warmup_steps": sft_cfg.get("warmup_steps", 50),
-        "bf16": use_bf16,
-        "fp16": use_fp16,
+        "bf16": False,  # Model is already in float16/bfloat16, disable automatic mixed precision
+        "fp16": False,  # Disable AMP to avoid gradient scaler conflicts
         "gradient_checkpointing": True,
         "save_steps": 200,
         "logging_steps": 10,
