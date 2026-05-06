@@ -62,69 +62,20 @@ def train(config_path: str) -> None:
     
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
-    grpo_cfg = config.get("grpo", {})
-    log_cfg = config.get("logging", {})
-
-    max_steps = grpo_cfg.get("max_steps", 300)
-    num_train_epochs = grpo_cfg.get("num_train_epochs", 1)
+    max_steps = config.get("grpo", {}).get("max_steps", 300)
+    num_train_epochs = config.get("grpo", {}).get("num_train_epochs", None)
 
     grpo_config = GRPOConfig(
         output_dir=output_dir,
         max_steps=max_steps,
         num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=grpo_cfg.get("per_device_train_batch_size", config.get("training", {}).get("per_device_train_batch_size", 32)),
-        learning_rate=grpo_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 5e-5)),
-        gradient_accumulation_steps=grpo_cfg.get("gradient_accumulation_steps", 1),
-        logging_steps=grpo_cfg.get("logging_steps", 10),
-        save_steps=grpo_cfg.get("save_steps", 100),
-        report_to=log_cfg.get("report_to", "none"),
-        lr_scheduler_type=grpo_cfg.get("lr_scheduler", "linear"),
-        warmup_steps=grpo_cfg.get("warmup_steps", 0),
-        max_grad_norm=grpo_cfg.get("max_grad_norm", 1.0),
-        weight_decay=grpo_cfg.get("weight_decay", 0.0),
-        bf16=False,
-        fp16=False,
+        per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 8), 
+        learning_rate=config.get("training", {}).get("learning_rate", 5e-5),
     )
-
-    # Load reward config
-    reward_cfg = config.get("reward", {})
-
-    # Preprocess records: build prompts and ensure required fields
-    from agent.prompts import build_messages
-    import json
-
-    processed_records = []
-    for record in records:
-        problem_statement = record.get("problem_statement", "")
-        code_context = record.get("code_context", "")
-        oracle_new_content = record.get("oracle_new_content", {})
-
-        # Build prompt using same method as SFT
-        messages = build_messages(problem_statement, code_context)
-        prompt_str = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        # Create processed record with required fields for GRPOTrainer and reward function
-        processed_record = {
-            "prompt": prompt_str,
-            "code_context": json.dumps(code_context) if isinstance(code_context, dict) else code_context,
-            "oracle_new_content": json.dumps(oracle_new_content) if isinstance(oracle_new_content, dict) else oracle_new_content,
-        }
-        # Preserve metadata
-        for key in ["instance_id", "repo", "problem_statement"]:
-            if key in record:
-                processed_record[key] = record[key]
-
-        processed_records.append(processed_record)
-
-    logger.info(f"Processed {len(processed_records)} records with prompts")
-
+     
     # Train
     # Convert list of dicts to HuggingFace Dataset
-    train_dataset = Dataset.from_list(processed_records)
+    train_dataset = Dataset.from_list(records)
 
     # Create reward function
     from reward.reward_fn import SWERLRewardFunction
@@ -134,14 +85,13 @@ def train(config_path: str) -> None:
         continuous_correctness=reward_cfg.get("continuous_correctness", True),
         use_matcher_correctness=reward_cfg.get("use_matcher_correctness", True),
     )
-    # Add __name__ attribute for GRPOTrainer logging
-    reward_fn.__name__ = "SWERLReward"
 
     trainer = GRPOTrainer(
         model=model,
         args=grpo_config,
         train_dataset=train_dataset,
-        reward_funcs=[reward_fn],
+        tokenizer=tokenizer,
+        reward_funcs=reward_fn,
     )
     
     trainer.train()
