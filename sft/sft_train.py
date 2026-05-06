@@ -169,13 +169,44 @@ def train_sft(config_path: str):
     train_file = sft_cfg.get("train_file", "data/processed/sft_cot_data.jsonl")
     max_length = sft_cfg.get("max_length", 16384)
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-    torch_dtype = dtype_map.get(model_cfg.get("torch_dtype", "float16"), torch.float16)
+    requested_dtype_name = model_cfg.get("torch_dtype", "float16")
+    torch_dtype = dtype_map.get(requested_dtype_name, torch.float16)
+
+    # fp16 weights without AMP/grad scaling overflow on the first non-trivial
+    # cross-entropy loss (we observed step-1 loss=80 → grads blow past fp16's
+    # ~65504 dynamic range → all LoRA params NaN → rest of training dead).
+    # When the user requested fp16 on a non-quantized model, silently upgrade
+    # to fp32 — same fallback the GRPO side already uses. bf16 is preserved
+    # if explicitly requested and supported by the GPU.
+    if (
+        torch_dtype is torch.float16
+        and not model_cfg.get("load_in_4bit", False)
+        and not sft_cfg.get("force_model_dtype", False)
+    ):
+        logger.info(
+            "Upgrading requested fp16 to fp32 for non-quantized SFT (avoids "
+            "fp16 gradient overflow on small LoRA models). "
+            "Set sft_baseline.force_model_dtype=true to override."
+        )
+        torch_dtype = torch.float32
+    effective_dtype_name = {
+        torch.float16: "float16",
+        torch.bfloat16: "bfloat16",
+        torch.float32: "float32",
+    }.get(torch_dtype, str(torch_dtype))
+
     use_bf16 = (
-        model_cfg.get("torch_dtype") == "bfloat16"
+        torch_dtype is torch.bfloat16
         and torch.cuda.is_available()
         and torch.cuda.is_bf16_supported()
     )
-    use_fp16 = model_cfg.get("torch_dtype", "float16") == "float16" and torch.cuda.is_available()
+    # Only enable fp16 AMP when the user explicitly forced an fp16 model AND
+    # has a CUDA device. Without that combination we keep AMP off so the
+    # default fp32 path is the simple, stable one.
+    use_fp16 = (
+        torch_dtype is torch.float16
+        and torch.cuda.is_available()
+    )
     logger.info(
         "SFT config: model=%s train_file=%s output_dir=%s max_length=%s",
         model_name,
@@ -184,8 +215,9 @@ def train_sft(config_path: str):
         max_length,
     )
     logger.info(
-        "SFT dtype flags: requested=%s bf16=%s fp16=%s cuda=%s",
-        model_cfg.get("torch_dtype", "float16"),
+        "SFT dtype: requested=%s effective=%s bf16_amp=%s fp16_amp=%s cuda=%s",
+        requested_dtype_name,
+        effective_dtype_name,
         use_bf16,
         use_fp16,
         torch.cuda.is_available(),
@@ -218,6 +250,20 @@ def train_sft(config_path: str):
         trust_remote_code=True,
     )
 
+    # If the tokenizer ended up with more tokens than the model's embedding
+    # rows (common when special tokens like <think>, <solution> are added by
+    # the chat template), resize so the model can predict them. Without this,
+    # the model's logits over the new IDs are random/uninitialized, which
+    # produces the absurdly high step-1 cross-entropy loss we saw.
+    embedding_rows = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_rows:
+        logger.info(
+            "Resizing token embeddings: %d -> %d to cover added special tokens",
+            embedding_rows,
+            len(tokenizer),
+        )
+        model.resize_token_embeddings(len(tokenizer))
+
     # LoRA for SFT (same config as GRPO for fair comparison)
     if model_cfg.get("load_in_4bit", False):
         model = prepare_model_for_kbit_training(
@@ -244,6 +290,10 @@ def train_sft(config_path: str):
     # Ensure model is in training mode
     model.train()
 
+    # AMP wiring: use bf16 AMP when the user has explicitly asked for bf16
+    # weights and the GPU supports it. Otherwise stay in fp32 — fp16 AMP
+    # with frozen base + LoRA is technically valid but has caused the
+    # gradient-scaler conflicts that the original code was trying to avoid.
     training_args_kwargs = {
         "output_dir": output_dir,
         "max_steps": sft_cfg.get("max_steps", 2000),
@@ -252,8 +302,9 @@ def train_sft(config_path: str):
         "learning_rate": sft_cfg.get("learning_rate", 2e-5),
         "lr_scheduler_type": sft_cfg.get("lr_scheduler", "cosine"),
         "warmup_steps": sft_cfg.get("warmup_steps", 50),
-        "bf16": False,  # Model is already in float16/bfloat16, disable automatic mixed precision
-        "fp16": False,  # Disable AMP to avoid gradient scaler conflicts
+        "bf16": use_bf16,
+        "fp16": False,  # We never enable fp16 AMP automatically; opt-in only.
+        "max_grad_norm": sft_cfg.get("max_grad_norm", 1.0),
         "gradient_checkpointing": True,
         "save_steps": 200,
         "logging_steps": 10,

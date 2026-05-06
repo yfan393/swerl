@@ -351,4 +351,14 @@ def train(config_path: str) -> None:
 
     trainer.train()
 
-    logger.info(f"Training complete. Model saved to {output_dir}")
+    # Persist the final policy and tokenizer to <output_dir>/final/ so that
+    # downstream commands (evaluation, the GRPO->SFT init_from_sft branch on
+    # subsequent runs, etc.) can pick it up the same way they pick up the
+    # SFT adapter. Without this, only the periodic checkpoint-N folders
+    # exist and there is no canonical "final" artifact.
+    final_dir = Path(output_dir) / "final"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving GRPO model to {final_dir}")
+    trainer.save_model(str(final_dir))
+    tokenizer.save_pretrained(str(final_dir))
+    logger.info(f"Training complete. Final model saved to {final_dir}")
