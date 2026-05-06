@@ -25,6 +25,7 @@ Re-implementation reward  (midway report §3.3):
 """
 
 import ast
+import difflib
 import json
 import logging
 import os
@@ -135,10 +136,6 @@ except ImportError:
 DEFAULT_ALPHA = 0.3
 FORMAT_PENALTY = -1.0
 PLAYGROUND_DIR = os.getenv("PLAYGROUND_DIR", "playground")
-
-# Import difflib for continuous correctness scoring
-import difflib
-
 
 def compute_patch_similarity_correctness(
     code_context: dict,
@@ -471,7 +468,9 @@ class SWERLRewardFunction:
     @staticmethod
     def _loads_if_json(value):
         if isinstance(value, str):
-            return json.loads(value)
+            stripped = value.strip()
+            if stripped.startswith(("{", "[")):
+                return json.loads(stripped)
         return value
 
     @staticmethod

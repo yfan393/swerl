@@ -3,11 +3,53 @@ training/grpo_train.py
 ======================
 GRPO (Group Relative Policy Optimization) training.
 """
+import inspect
 import logging
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _supports_parameter(cls, parameter: str) -> bool:
+    return parameter in inspect.signature(cls).parameters
+
+
+def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str, config: dict):
+    kwargs = {
+        "output_dir": output_dir,
+        "max_steps": grpo_cfg.get("max_steps", 300),
+        "num_train_epochs": grpo_cfg.get("num_train_epochs", 1),
+        "per_device_train_batch_size": grpo_cfg.get(
+            "per_device_train_batch_size",
+            config.get("training", {}).get("per_device_train_batch_size", 1),
+        ),
+        "learning_rate": grpo_cfg.get(
+            "learning_rate",
+            config.get("training", {}).get("learning_rate", 5e-5),
+        ),
+        "num_generations": grpo_cfg.get("num_generations", 2),
+        "gradient_accumulation_steps": grpo_cfg.get("gradient_accumulation_steps", 1),
+        "logging_steps": grpo_cfg.get("logging_steps", 10),
+        "save_steps": grpo_cfg.get("save_steps", 100),
+        "report_to": log_cfg.get("report_to", "none"),
+        "lr_scheduler_type": grpo_cfg.get("lr_scheduler", "linear"),
+        "warmup_steps": grpo_cfg.get("warmup_steps", 0),
+        "max_grad_norm": grpo_cfg.get("max_grad_norm", 1.0),
+        "weight_decay": grpo_cfg.get("weight_decay", 0.0),
+        "bf16": False,
+        "fp16": False,
+    }
+    optional_mappings = {
+        "beta": "beta",
+        "epsilon": "clip_epsilon",
+        "max_completion_length": "max_new_tokens",
+        "temperature": "generation_temperature",
+        "optim": "optimizer",
+    }
+    for arg_name, cfg_name in optional_mappings.items():
+        if cfg_name in grpo_cfg and _supports_parameter(GRPOConfig, arg_name):
+            kwargs[arg_name] = grpo_cfg[cfg_name]
+    return GRPOConfig(**kwargs)
 
 def train(config_path: str) -> None:
     """
@@ -21,12 +63,14 @@ def train(config_path: str) -> None:
     config = read_yaml(config_path)
 
     try:
+        import torch
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
+            BitsAndBytesConfig,
         )
         from trl import GRPOConfig, GRPOTrainer
-        from peft import LoraConfig, get_peft_model
+        from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
         from datasets import Dataset
     except ImportError as e:
         raise RuntimeError(
@@ -38,6 +82,7 @@ def train(config_path: str) -> None:
     model_name = config.get("model", {}).get("name_or_path", "gpt2")
     train_file = config.get("paths", {}).get("train_file", "data/processed/train.jsonl")
     output_dir = config.get("paths", {}).get("output_dir", "outputs/grpo/")
+    model_cfg = config.get("model", {})
 
     # Load training data
     records = read_jsonl(train_file)
@@ -48,25 +93,55 @@ def train(config_path: str) -> None:
     logger.info(f"Loaded {len(records)} training records")
 
     # Load model and tokenizer
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    torch_dtype = dtype_map.get(model_cfg.get("torch_dtype", "float16"), torch.float16)
+    quant_config = None
+    if model_cfg.get("load_in_4bit", False):
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch_dtype,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+        quantization_config=quant_config,
+        device_map="auto" if model_cfg.get("load_in_4bit", False) else None,
+        trust_remote_code=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    if model_cfg.get("load_in_4bit", False):
+        model = prepare_model_for_kbit_training(model)
 
     # Apply LoRA
-    lora_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        target_modules=["q_proj", "v_proj"],
-        lora_dropout=0.05,
-    )
-    model = get_peft_model(model, lora_config)
+    sft_final_dir = Path(config.get("sft_baseline", {}).get("output_dir", "")) / "final"
+    if config.get("grpo", {}).get("init_from_sft", True) and (sft_final_dir / "adapter_config.json").exists():
+        logger.info("Initializing GRPO from SFT adapter: %s", sft_final_dir)
+        model = PeftModel.from_pretrained(model, str(sft_final_dir), is_trainable=True)
+    elif model_cfg.get("use_lora", True):
+        lora_cfg = model_cfg.get("lora", {})
+        lora_config = LoraConfig(
+            r=lora_cfg.get("r", 8),
+            lora_alpha=lora_cfg.get("lora_alpha", 16),
+            target_modules=lora_cfg.get("target_modules", ["q_proj", "v_proj"]),
+            lora_dropout=lora_cfg.get("lora_dropout", 0.05),
+            bias=lora_cfg.get("bias", "none"),
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+    if hasattr(model, "print_trainable_parameters"):
+        model.print_trainable_parameters()
 
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
     grpo_cfg = config.get("grpo", {})
     log_cfg = config.get("logging", {})
-
-    max_steps = grpo_cfg.get("max_steps", 300)
-    num_train_epochs = grpo_cfg.get("num_train_epochs", 1)
 
     per_device_train_batch_size = grpo_cfg.get(
         "per_device_train_batch_size",
@@ -95,24 +170,7 @@ def train(config_path: str) -> None:
             f"must be at least num_generations for a single unique prompt per step."
         )
 
-    grpo_config = GRPOConfig(
-        output_dir=output_dir,
-        max_steps=max_steps,
-        num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=per_device_train_batch_size,
-        learning_rate=grpo_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 5e-5)),
-        num_generations=num_generations,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        logging_steps=grpo_cfg.get("logging_steps", 10),
-        save_steps=grpo_cfg.get("save_steps", 100),
-        report_to=log_cfg.get("report_to", "none"),
-        lr_scheduler_type=grpo_cfg.get("lr_scheduler", "linear"),
-        warmup_steps=grpo_cfg.get("warmup_steps", 0),
-        max_grad_norm=grpo_cfg.get("max_grad_norm", 1.0),
-        weight_decay=grpo_cfg.get("weight_decay", 0.0),
-        bf16=False,
-        fp16=False,
-    )
+    grpo_config = _make_grpo_config(GRPOConfig, grpo_cfg, log_cfg, output_dir, config)
 
     # Load reward config
     reward_cfg = config.get("reward", {})
@@ -124,11 +182,12 @@ def train(config_path: str) -> None:
     processed_records = []
     for record in records:
         problem_statement = record.get("problem_statement", "")
-        code_context = record.get("code_context", "")
+        prompt_context = record.get("code_context", "")
+        file_contents = record.get("file_contents", {})
         oracle_new_content = record.get("oracle_new_content", {})
 
         # Build prompt using same method as SFT
-        messages = build_messages(problem_statement, code_context)
+        messages = build_messages(problem_statement, prompt_context)
         prompt_str = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -138,7 +197,7 @@ def train(config_path: str) -> None:
         # Create processed record with required fields for GRPOTrainer and reward function
         processed_record = {
             "prompt": prompt_str,
-            "code_context": json.dumps(code_context) if isinstance(code_context, dict) else code_context,
+            "code_context": json.dumps(file_contents),
             "oracle_new_content": json.dumps(oracle_new_content) if isinstance(oracle_new_content, dict) else oracle_new_content,
         }
         # Preserve metadata
