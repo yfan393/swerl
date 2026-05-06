@@ -63,7 +63,7 @@ def train(config_path: str) -> None:
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
     max_steps = config.get("grpo", {}).get("max_steps", 300)
-    num_train_epochs = config.get("grpo", {}).get("num_train_epochs", None)
+    num_train_epochs = config.get("grpo", {}).get("num_train_epochs", 1)
 
     grpo_config = GRPOConfig(
         output_dir=output_dir,
