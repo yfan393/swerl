@@ -45,11 +45,69 @@ def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str
         "max_completion_length": "max_new_tokens",
         "temperature": "generation_temperature",
         "optim": "optimizer",
+        # Sampling-stability params: filtering the distribution before
+        # multinomial sampling avoids the
+        # "probability tensor contains either inf, nan or element < 0" CUDA assert
+        # that fires when raw softmax of an unfiltered ~150k-token vocab
+        # produces a numerical spike.
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "min_p": "min_p",
+        "repetition_penalty": "repetition_penalty",
     }
     for arg_name, cfg_name in optional_mappings.items():
         if cfg_name in grpo_cfg and _supports_parameter(GRPOConfig, arg_name):
             kwargs[arg_name] = grpo_cfg[cfg_name]
     return GRPOConfig(**kwargs)
+
+
+def _select_model_dtype(torch, model_cfg: dict, grpo_cfg: dict):
+    requested = grpo_cfg.get("torch_dtype", model_cfg.get("torch_dtype", "float16"))
+    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    torch_dtype = dtype_map.get(requested, torch.float16)
+
+    if grpo_cfg.get("force_model_dtype"):
+        return torch_dtype
+    if model_cfg.get("load_in_4bit", False):
+        return torch_dtype
+    if torch_dtype is torch.float16:
+        logger.info(
+            "Using float32 for non-quantized GRPO generation instead of requested "
+            "float16. Set grpo.force_model_dtype=true to override."
+        )
+        return torch.float32
+    return torch_dtype
+
+
+def _stabilize_generation_config(model, tokenizer, grpo_cfg: dict | None = None) -> None:
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return
+    generation_config.pad_token_id = tokenizer.pad_token_id
+    generation_config.eos_token_id = tokenizer.eos_token_id
+    # remove_invalid_values clamps NaN/Inf in logits before softmax. Without
+    # this, a single rogue activation can poison the entire probability tensor
+    # and trigger the "probability tensor contains either inf, nan or element < 0"
+    # CUDA assert inside torch.multinomial.
+    generation_config.remove_invalid_values = True
+    # Mirror sampling-stability params from the user's grpo config onto the
+    # model's own generation_config, so any code path that doesn't go through
+    # GRPOConfig (e.g. fallback HF generate) still gets a filtered distribution.
+    grpo_cfg = grpo_cfg or {}
+    if "top_p" in grpo_cfg:
+        generation_config.top_p = grpo_cfg["top_p"]
+    if "top_k" in grpo_cfg:
+        generation_config.top_k = grpo_cfg["top_k"]
+    if "min_p" in grpo_cfg:
+        generation_config.min_p = grpo_cfg["min_p"]
+    if "repetition_penalty" in grpo_cfg:
+        generation_config.repetition_penalty = grpo_cfg["repetition_penalty"]
+    # Clamp temperature to a strictly-positive value; T=0 with do_sample=True
+    # is another well-known cause of NaN probability tensors.
+    temp = grpo_cfg.get("generation_temperature", getattr(generation_config, "temperature", 1.0))
+    generation_config.temperature = max(float(temp), 1e-3)
+    generation_config.do_sample = True
+
 
 def train(config_path: str) -> None:
     """
@@ -83,6 +141,8 @@ def train(config_path: str) -> None:
     train_file = config.get("paths", {}).get("train_file", "data/processed/train.jsonl")
     output_dir = config.get("paths", {}).get("output_dir", "outputs/grpo/")
     model_cfg = config.get("model", {})
+    grpo_cfg = config.get("grpo", {})
+    log_cfg = config.get("logging", {})
 
     # Load training data
     records = read_jsonl(train_file)
@@ -93,8 +153,7 @@ def train(config_path: str) -> None:
     logger.info(f"Loaded {len(records)} training records")
 
     # Load model and tokenizer
-    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-    torch_dtype = dtype_map.get(model_cfg.get("torch_dtype", "float16"), torch.float16)
+    torch_dtype = _select_model_dtype(torch, model_cfg, grpo_cfg)
     quant_config = None
     if model_cfg.get("load_in_4bit", False):
         quant_config = BitsAndBytesConfig(
@@ -115,6 +174,7 @@ def train(config_path: str) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    _stabilize_generation_config(model, tokenizer, grpo_cfg)
 
     if model_cfg.get("load_in_4bit", False):
         model = prepare_model_for_kbit_training(model)
@@ -140,9 +200,6 @@ def train(config_path: str) -> None:
 
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
-    grpo_cfg = config.get("grpo", {})
-    log_cfg = config.get("logging", {})
-
     per_device_train_batch_size = grpo_cfg.get(
         "per_device_train_batch_size",
         config.get("training", {}).get("per_device_train_batch_size", 1),

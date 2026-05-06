@@ -64,6 +64,12 @@ grpo:
   optimizer: "adamw_torch"
   weight_decay: 0.0
   generation_temperature: 1.0
+  # Sampling-stability params (prevent NaN/Inf in probability tensor during
+  # multinomial sampling).
+  top_p: 0.95
+  top_k: 50
+  min_p: 0.0
+  repetition_penalty: 1.0
   max_new_tokens: 512       # was 2048; shorter outputs → less memory
   save_steps: 100
   logging_steps: 10

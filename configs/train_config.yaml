@@ -50,6 +50,12 @@ grpo:
   weight_decay: 0.0
   # Rollout generation temperature
   generation_temperature: 1.0
+  # Sampling-stability params (prevent NaN/Inf in probability tensor during
+  # multinomial sampling).
+  top_p: 0.95
+  top_k: 50
+  min_p: 0.0
+  repetition_penalty: 1.0
   # Max tokens for rollout generation
   max_new_tokens: 2048
   # Save checkpoint every N steps
