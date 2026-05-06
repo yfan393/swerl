@@ -1,0 +1,47 @@
+# ============================================================
+# Student zero-cost data config
+# ============================================================
+# Small enough for a laptop or a free Colab/Kaggle notebook.
+# Network downloads are still required, but there is no paid API.
+
+gharchive:
+  start_date: "2023-01-01" # one month of data is plenty for 50 seeds
+  end_date: "2023-01-31"
+  base_url: "https://data.gharchive.org"
+  event_types: ["PullRequestEvent"]
+  download_dir: "data/raw/gharchive"
+  max_workers: 2
+
+github_api:
+  token_env: "GITHUB_TOKEN"  # optional free GitHub token for higher rate limits
+  max_workers: 2
+  max_retries: 5
+
+filtering:
+  min_python_files: 1
+  skip_patterns:
+    - "*.lock"
+    - "requirements*.txt"
+    - "poetry.lock"
+  bot_suffixes: ["[bot]", "-bot", "_bot"]
+  require_merged: true
+  require_linked_issue: true
+  max_diff_chars: 100000
+  min_diff_chars: 50
+  max_files_changed: 5
+
+dataset:
+  num_seeds: 50
+  train_ratio: 0.90
+  output_dir: "data/processed"
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  repo_cache_dir: "data/repos"
+
+rag_index:
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"
+  chunk_level: "function"
+  max_chunk_tokens: 256
+  faiss_index_type: "Flat"
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"

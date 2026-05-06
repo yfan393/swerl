@@ -1,0 +1,45 @@
+# SWE-RL Re-implementation Dependencies
+# Install in VS Code with:
+#   python -m pip install -r requirements.txt
+#
+# The student configs keep external services optional. The packages below are
+# enough for local data/RAG/SFT/GRPO trials, assuming your machine has a working
+# PyTorch install for its CPU/GPU setup.
+
+# Base model & training
+torch>=2.2.0
+transformers>=4.45.0
+accelerate>=0.34.0
+peft>=0.12.0
+trl>=0.11.0           # GRPOTrainer
+bitsandbytes>=0.43.0  # 4-bit quantization (optional for inference)
+datasets>=2.21.0
+
+# RAG / Retrieval
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0      # use faiss-gpu if GPU available
+numpy>=1.26.0
+
+# Data pipeline
+requests>=2.32.0
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+gitpython>=3.1.43     # clone repos
+PyGithub>=2.4.0       # GitHub API wrapper
+ijson>=3.3.0          # streaming JSON parsing for GHArchive
+
+# Code analysis
+unidiff>=0.7.5        # parse unified diffs (from swe-rl)
+tiktoken>=0.7.0       # token counting
+astunparse>=1.6.3
+
+# Evaluation & utilities
+tenacity>=8.5.0       # retry logic
+openai>=1.50.0        # optional: only needed for --mode api SFT data generation
+scipy>=1.13.0
+flake8>=7.0.0         # optional reward lint check; skipped gracefully if unavailable
+
+# Logging & config
+pyyaml>=6.0.2
+wandb>=0.17.0         # optional: configs/*student*.yaml use report_to: none
+ipykernel>=6.29.0     # useful when running notebooks/cells from VS Code

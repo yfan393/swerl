@@ -1,0 +1,117 @@
+# ============================================================
+# FREE-TIER Training Configuration
+# ============================================================
+# Designed for Google Colab (free T4 GPU, 16 GB VRAM) or
+# Kaggle (free 2×T4, 30 GB combined VRAM, 30 h/week).
+#
+# Key cost-saving choices vs. train_config.yaml:
+#   - Smaller model  : Qwen2.5-Coder-1.5B (fits on any free GPU)
+#                      OR Llama-3.2-3B-Instruct (still free, bigger)
+#   - QLoRA          : 4-bit base + LoRA adapters → ~2-4 GB VRAM for model
+#   - G=4 rollouts   : was 16; reduces peak memory 4×
+#   - 500 train steps: was 2000; ~1-2 h on T4
+#   - 500 seeds      : was 10 000; data pipeline finishes in minutes
+#   - 4k context     : was 12k; reduces sequence memory
+#
+# ALL libraries used are 100 % free and open-source:
+#   transformers, trl, peft, bitsandbytes, sentence-transformers,
+#   faiss-cpu, datasets, accelerate, wandb (optional)
+#
+# SFT teacher model options (free):
+#   - Groq API  (free tier, ~14 400 tokens/min):
+#       export OPENAI_BASE_URL=https://api.groq.com/openai/v1
+#       export OPENAI_API_KEY=<your free Groq key>
+#       python -m sft.generate_cot_data --model llama-3.3-70b-versatile
+#   - Together AI free credits or Hugging Face Inference API
+#   - Self-host with Ollama on CPU (slow but completely free):
+#       export OPENAI_BASE_URL=http://localhost:11434/v1
+#       python -m sft.generate_cot_data --model llama3.1:8b
+# ============================================================
+
+model:
+  # ── Option A (recommended for Colab free / 15 GB VRAM) ──────────────
+  name_or_path: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+  # ── Option B (Kaggle 2×T4 or Colab Pro) ────────────────────────────
+  # name_or_path: "meta-llama/Llama-3.2-3B-Instruct"
+  # ── Option C (Colab Pro+ / A100 with QLoRA) ─────────────────────────
+  # name_or_path: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+  max_length: 4096          # 4k context (saves ~3× memory vs 16k)
+  use_lora: true
+  load_in_4bit: true        # QLoRA: base model uses ~1-2 GB instead of 3-6 GB
+  torch_dtype: "float16"    # free T4 GPUs support fp16; bf16 needs newer GPUs
+
+  lora:
+    r: 16                   # was 64; lower rank = fewer trainable params
+    lora_alpha: 32          # keep alpha = 2r
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "k_proj"
+      - "o_proj"
+    lora_dropout: 0.05
+    bias: "none"
+
+grpo:
+  num_generations: 4        # G=4 rollouts/problem (was 16); 4× less VRAM
+  num_problems_per_step: 2  # 2 problems × 4 rollouts = 8 effective batch
+  beta: 0.001               # KL coefficient (same as full-scale)
+  clip_epsilon: 0.2
+  max_steps: 500            # ~1-2 h on T4
+  learning_rate: 1.0e-6
+  lr_scheduler: "cosine"
+  warmup_steps: 20
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  optimizer: "adamw_torch"
+  weight_decay: 0.0
+  generation_temperature: 1.0
+  max_new_tokens: 512       # was 2048; shorter outputs → less memory
+  save_steps: 100
+  logging_steps: 10
+
+reward:
+  alpha: 0.3                # correctness weight (same as full-scale)
+  format_penalty: -1.0
+
+rag:
+  top_k: 5                  # was 8; fewer chunks → shorter context
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"  # FREE, runs on CPU
+  max_context_tokens: 3000  # budget for retrieved code
+
+paths:
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  output_dir: "outputs/grpo_free"
+
+logging:
+  wandb_project: "swe-rl-free"
+  wandb_run_name: "grpo-qwen-1.5b-free"
+  report_to: "none"         # set to "wandb" if you have a free W&B account
+
+sft_baseline:
+  output_dir: "outputs/sft_free"
+  train_file: "data/processed/sft_cot_data.jsonl"
+  teacher:
+    mode: "oracle"          # free: build targets from oracle_new_content, no API
+    max_records: 200
+    # To use a free/local OpenAI-compatible endpoint instead:
+    # mode: "api"
+    # model: "llama3.1:8b"
+    # max_concurrent: 1
+    # max_tokens: 2048
+  max_steps: 500
+  learning_rate: 2.0e-5
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_length: 4096
+  lr_scheduler: "cosine"
+  warmup_steps: 20
+
+evaluation:
+  swe_bench_split: "princeton-nlp/SWE-bench_Verified"
+  num_repair_samples: 10    # was 500; 10 patches per instance on free GPU
+  eval_temperature: 1.0
+  output_dir: "outputs/eval_free"

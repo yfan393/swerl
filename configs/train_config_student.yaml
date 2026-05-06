@@ -1,0 +1,83 @@
+# ============================================================
+# Student zero-cost training config
+# ============================================================
+# Designed for smoke tests and small experiments on a free GPU. This will not
+# reproduce the paper, but it lets you run the whole training path without
+# paying for model APIs, managed vector databases, or experiment trackers.
+
+model:
+  name_or_path: "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+  max_length: 2048
+  use_lora: true
+  load_in_4bit: true
+  torch_dtype: "float16"
+
+  lora:
+    r: 8
+    lora_alpha: 16
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "k_proj"
+      - "o_proj"
+    lora_dropout: 0.05
+    bias: "none"
+
+grpo:
+  num_generations: 2
+  num_problems_per_step: 1
+  beta: 0.001
+  clip_epsilon: 0.2
+  max_steps: 50
+  learning_rate: 1.0e-6
+  lr_scheduler: "cosine"
+  warmup_steps: 5
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  optimizer: "adamw_torch"
+  weight_decay: 0.0
+  generation_temperature: 1.0
+  max_new_tokens: 256
+  save_steps: 25
+  logging_steps: 5
+
+reward:
+  alpha: 0.3
+  format_penalty: -1.0
+
+rag:
+  top_k: 3
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"
+  max_context_tokens: 1500
+
+paths:
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  output_dir: "outputs/grpo_student"
+
+logging:
+  wandb_project: "swe-rl-student"
+  wandb_run_name: "grpo-qwen-0.5b-student"
+  report_to: "none"
+
+sft_baseline:
+  output_dir: "outputs/sft_student"
+  train_file: "data/processed/sft_cot_data.jsonl"
+  teacher:
+    mode: "oracle"
+    max_records: 50
+  max_steps: 50
+  learning_rate: 2.0e-5
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_length: 2048
+  lr_scheduler: "cosine"
+  warmup_steps: 5
+
+evaluation:
+  swe_bench_split: "princeton-nlp/SWE-bench_Verified"
+  num_repair_samples: 2
+  eval_temperature: 1.0
+  output_dir: "outputs/eval_student"

@@ -1,0 +1,70 @@
+# ============================================================
+# Data Pipeline Configuration
+# ============================================================
+
+gharchive:
+  # Date range to pull events from GHArchive
+  start_date: "2015-01-01"
+  end_date: "2024-08-31"
+  # GHArchive base URL (hourly dumps)
+  base_url: "https://data.gharchive.org"
+  # Event types to keep
+  event_types: ["PullRequestEvent"]
+  # Temporary download dir
+  download_dir: "data/raw/gharchive"
+
+github_api:
+  # Set via env var GITHUB_TOKEN for higher rate limits
+  token_env: "GITHUB_TOKEN"
+  # Max parallel API requests
+  max_workers: 8
+  # Retry on rate limit
+  max_retries: 5
+
+filtering:
+  # PR must have at least this many Python file changes
+  min_python_files: 1
+  # Skip PRs touching only these file patterns
+  skip_patterns:
+    - "*.lock"
+    - "requirements*.txt"
+    - "poetry.lock"
+    - "Pipfile.lock"
+    - "package-lock.json"
+  # Skip bot authors
+  bot_suffixes: ["[bot]", "-bot", "_bot"]
+  # PR action must be "closed" with merged=true
+  require_merged: true
+  # Issue must be linked (body or title contains "fix #N" or "closes #N")
+  require_linked_issue: true
+  # Max diff size in characters (avoids gigantic PRs)
+  max_diff_chars: 500000
+  # Minimum diff size
+  min_diff_chars: 50
+  # Max number of files changed
+  max_files_changed: 20
+
+dataset:
+  # Total seed PRs to select (paper uses 273k; we use 10k)
+  num_seeds: 10000
+  # Fraction used for training; remaining records go to validation.
+  train_ratio: 0.95
+  # Output paths
+  output_dir: "data/processed"
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  # Repo clone cache directory
+  repo_cache_dir: "data/repos"
+
+rag_index:
+  # Embedding model for code chunks
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Chunk granularity. Only "function" is currently supported.
+  chunk_level: "function"
+  # Max tokens per chunk before splitting
+  max_chunk_tokens: 512
+  # FAISS index type. Only "Flat" is currently supported.
+  faiss_index_type: "Flat"
+  # Output paths
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"

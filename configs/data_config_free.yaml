@@ -1,0 +1,55 @@
+# ============================================================
+# FREE-TIER Data Pipeline Configuration
+# ============================================================
+# Collects ~500 PR seeds instead of 10 000.
+# The full pipeline runs in < 30 minutes on a laptop CPU.
+#
+# GitHub API is FREE with a personal access token:
+#   https://github.com/settings/tokens  (no scopes needed, just public repo)
+#   export GITHUB_TOKEN=ghp_...
+#   Rate limit: 5 000 requests/hour (vs 60 without token)
+#
+# GHArchive is completely FREE (public HTTP dataset, no login).
+# SentenceTransformers + FAISS run entirely on CPU, no GPU needed.
+# ============================================================
+
+gharchive:
+  start_date: "2023-01-01"  # one year of data is plenty for 500 seeds
+  end_date: "2023-12-31"
+  base_url: "https://data.gharchive.org"
+  event_types: ["PullRequestEvent"]
+  download_dir: "data/raw/gharchive"
+
+github_api:
+  token_env: "GITHUB_TOKEN"  # free personal access token
+  max_workers: 4             # conservative to stay within rate limits
+  max_retries: 5
+
+filtering:
+  min_python_files: 1
+  skip_patterns:
+    - "*.lock"
+    - "requirements*.txt"
+    - "poetry.lock"
+  bot_suffixes: ["[bot]", "-bot", "_bot"]
+  require_merged: true
+  require_linked_issue: true
+  max_diff_chars: 200000    # smaller than full-scale (was 500k)
+  min_diff_chars: 50
+  max_files_changed: 10     # more restrictive (was 20)
+
+dataset:
+  num_seeds: 500            # was 10 000; 500 fits in < 1 GB and trains quickly
+  train_ratio: 0.90
+  output_dir: "data/processed"
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  repo_cache_dir: "data/repos"
+
+rag_index:
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"  # FREE, 80 MB download
+  chunk_level: "function"
+  max_chunk_tokens: 256     # was 512; smaller chunks = faster indexing
+  faiss_index_type: "Flat"  # exact search, fine for 500 seeds
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"

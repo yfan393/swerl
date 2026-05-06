@@ -1,0 +1,6 @@
+# Developer conveniences for local VS Code work.
+-r requirements.txt
+
+pytest>=8.0.0
+ruff>=0.5.0
+black>=24.0.0

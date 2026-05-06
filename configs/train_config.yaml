@@ -1,0 +1,103 @@
+# ============================================================
+# Training Configuration — SWE-RL Re-implementation
+# ============================================================
+
+model:
+  # Base model (Llama 3.1 8B Instruct)
+  name_or_path: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  # Context window (match paper: 16k)
+  max_length: 16384
+  # Use LoRA for memory efficiency
+  use_lora: true
+  lora:
+    r: 64
+    lora_alpha: 128
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj",
+                     "gate_proj", "up_proj", "down_proj"]
+    lora_dropout: 0.05
+    bias: "none"
+  # Load in 4-bit for reduced memory (disable for full precision)
+  load_in_4bit: false
+  torch_dtype: "bfloat16"
+
+grpo:
+  # GRPO hyperparameters
+  # Group size G: rollouts per problem
+  num_generations: 16          # G in the paper (paper: 16)
+  # Problems per global step (paper: 32 for 70B; we use 8 for 8B)
+  num_problems_per_step: 8
+  # Effective batch size = num_problems_per_step * num_generations = 128
+  # KL coefficient beta
+  beta: 0.001
+  # PPO clip epsilon
+  clip_epsilon: 0.2
+  # Max training steps (paper: 1600; we run 2000)
+  max_steps: 2000
+  # Learning rate
+  learning_rate: 1.0e-6
+  lr_scheduler: "cosine"
+  warmup_steps: 50
+  # Gradient accumulation to simulate larger batch
+  gradient_accumulation_steps: 4
+  # Max gradient norm
+  max_grad_norm: 1.0
+  # Optimizer
+  optimizer: "adamw_torch"
+  weight_decay: 0.0
+  # Rollout generation temperature
+  generation_temperature: 1.0
+  # Max tokens for rollout generation
+  max_new_tokens: 2048
+  # Save checkpoint every N steps
+  save_steps: 200
+  logging_steps: 10
+
+reward:
+  # Combined reward: alpha * correctness + (1 - alpha) * similarity
+  alpha: 0.3          # weight for correctness term
+  # Penalty for format errors
+  format_penalty: -1.0
+
+rag:
+  # Number of code chunks to retrieve per issue
+  top_k: 8
+  # RAG index paths (must match data_config.yaml)
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Max context tokens after retrieval
+  max_context_tokens: 12000
+
+paths:
+  # Dataset files
+  train_file: "data/processed/train.jsonl"
+  val_file: "data/processed/val.jsonl"
+  # Output directory
+  output_dir: "outputs/grpo"
+
+logging:
+  # Weights & Biases project name
+  wandb_project: "swe-rl-8b"
+  wandb_run_name: "grpo-llama-3.1-8b-10k"
+  report_to: "wandb"  # or "tensorboard" or "none"
+
+sft_baseline:
+  output_dir: "outputs/sft"
+  train_file: "data/processed/sft_cot_data.jsonl"
+  max_steps: 2000
+  learning_rate: 2.0e-5
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  max_length: 16384
+  lr_scheduler: "cosine"
+  warmup_steps: 50
+
+evaluation:
+  # SWE-bench split to evaluate on
+  swe_bench_split: "princeton-nlp/SWE-bench_Verified"
+  # Number of repair patches to generate per issue
+  num_repair_samples: 500
+  # Temperature for patch generation during eval
+  eval_temperature: 1.0
+  # Output directory for eval results
+  output_dir: "outputs/eval"
