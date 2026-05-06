@@ -77,11 +77,21 @@ def train(config_path: str) -> None:
     # Convert list of dicts to HuggingFace Dataset
     train_dataset = Dataset.from_list(records)
 
+    # Create reward function
+    from reward.reward_fn import SWERLRewardFunction
+    reward_fn = SWERLRewardFunction(
+        alpha=reward_cfg.get("alpha", 0.3),
+        use_lint=True,
+        continuous_correctness=reward_cfg.get("continuous_correctness", True),
+        use_matcher_correctness=reward_cfg.get("use_matcher_correctness", True),
+    )
+
     trainer = GRPOTrainer(
         model=model,
         args=grpo_config,
         train_dataset=train_dataset,
         tokenizer=tokenizer,
+        reward_funcs=reward_fn,
     )
     
     trainer.train()
