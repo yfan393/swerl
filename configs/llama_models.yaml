@@ -1,0 +1,82 @@
+# Llama 3.1 Model Configurations for SWE-RL
+
+models:
+  llama_1b:
+    name: "Meta-Llama-3.1-1B"
+    model_id: "meta-llama/Llama-3.1-1B"
+    context_length: 131072
+    max_output_tokens: 8192
+    params_billions: 1.0
+    # For cluster inference
+    cluster:
+      endpoint: null  # Set to your cluster endpoint, e.g., "http://cluster.example.com:8000/v1"
+      timeout: 60
+      max_retries: 3
+    inference:
+      temperature: 0.7
+      top_p: 1.0
+      repetition_penalty: 1.0
+    hardware:
+      min_gpu_memory_gb: 2  # Rough estimate
+      recommended_batch_size: 8
+    description: "1B parameter model - fastest inference, lowest memory"
+    use_case: "Fast prototyping, edge deployment, resource-constrained environments"
+
+  llama_3b:
+    name: "Meta-Llama-3.1-3B"
+    model_id: "meta-llama/Llama-3.1-3B"
+    context_length: 131072
+    max_output_tokens: 8192
+    params_billions: 3.0
+    cluster:
+      endpoint: null
+      timeout: 120
+      max_retries: 3
+    inference:
+      temperature: 0.7
+      top_p: 1.0
+      repetition_penalty: 1.0
+    hardware:
+      min_gpu_memory_gb: 8
+      recommended_batch_size: 4
+    description: "3B parameter model - balanced speed and quality"
+    use_case: "Production deployments with moderate computational resources"
+
+  llama_8b:
+    name: "Meta-Llama-3.1-8B"
+    model_id: "meta-llama/Llama-3.1-8B"
+    context_length: 131072
+    max_output_tokens: 8192
+    params_billions: 8.0
+    cluster:
+      endpoint: null
+      timeout: 180
+      max_retries: 3
+    inference:
+      temperature: 0.7
+      top_p: 1.0
+      repetition_penalty: 1.0
+    hardware:
+      min_gpu_memory_gb: 16
+      recommended_batch_size: 2
+    description: "8B parameter model - highest quality, slower inference"
+    use_case: "Maximum code repair accuracy when resources permit"
+
+# Comparison study settings
+comparison:
+  models_to_compare: ["llama_1b", "llama_3b", "llama_8b"]
+  test_instances: 100  # Number of test cases per model
+  metrics:
+    - "pass_rate"           # % of instances where model generates syntactically valid patches
+    - "format_correctness"  # % of valid SEARCH/REPLACE format
+    - "execution_time_ms"   # Average time per instance
+    - "tokens_per_second"   # Throughput metric
+  timeout_per_instance: 300  # Seconds before timeout
+
+# RAG settings (same across all models)
+rag:
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"
+  top_k: 8
+  max_context_tokens: 12000
+  index_path: "data/rag/faiss.index"
+  chunk_meta_path: "data/rag/chunks.jsonl"
