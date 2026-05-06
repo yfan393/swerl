@@ -235,7 +235,6 @@ def train_sft(config_path: str):
         args=training_args,
         train_dataset=train_dataset,
         data_collator=data_collator,
-        processing_class=tokenizer,
     )
 
     logger.info("Starting SFT training...")
