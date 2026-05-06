@@ -137,6 +137,109 @@ DEFAULT_ALPHA = 0.3
 FORMAT_PENALTY = -1.0
 PLAYGROUND_DIR = os.getenv("PLAYGROUND_DIR", "playground")
 
+
+def _extract_answer_lenient(output: str) -> str:
+    if "<solution>" in output:
+        answer = output.split("<solution>", 1)[1]
+        if "</solution>" in answer:
+            answer = answer.split("</solution>", 1)[0]
+        return answer.strip()
+    return output.strip()
+
+
+def _parse_search_replace_lenient(text: str) -> dict:
+    import re
+
+    pattern = (
+        r"(?:```[^\n]*\n)?### ([^\n]+)\n<<<<<<< SEARCH\n"
+        r"([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>> REPLACE"
+        r"(?:\n```)?"
+    )
+    results = {}
+    for path, search, replace in re.findall(pattern, text):
+        results.setdefault(path.strip(), []).append((search, replace))
+    return results
+
+
+def _format_shaping_reward(output: str) -> tuple[float, dict]:
+    checks = {
+        "has_think_start": "<think>" in output,
+        "has_think_end": "</think>" in output,
+        "has_solution_start": "<solution>" in output,
+        "has_search": "<<<<<<< SEARCH" in output,
+        "has_separator": "=======" in output,
+        "has_replace": ">>>>>>> REPLACE" in output,
+    }
+    score = FORMAT_PENALTY + sum(0.1 for passed in checks.values() if passed)
+    return min(score, -0.1), {"format_shaping": checks}
+
+
+def calculate_lenient_combined_reward(
+    code_context: dict,
+    oracle_new_content: dict,
+    output: str,
+    alpha: float = DEFAULT_ALPHA,
+    continuous_correctness: bool = True,
+    use_matcher_correctness: bool = True,
+) -> tuple:
+    answer = _extract_answer_lenient(output)
+    sr_dict = _parse_search_replace_lenient(answer)
+    if not sr_dict:
+        return _format_shaping_reward(output)
+
+    try:
+        pred_new_content = apply_code_change(code_context, sr_dict, silent=True)
+    except Exception as e:
+        reward, meta = _format_shaping_reward(output)
+        meta["lenient_error"] = f"search/replace did not apply: {e}"
+        return max(reward, -0.25), meta
+
+    oracle_patches = {}
+    pred_patches = {}
+    for path in set(oracle_new_content) | set(pred_new_content):
+        old = code_context.get(path, "")
+        oracle_new = oracle_new_content.get(path, old)
+        pred_new = pred_new_content.get(path, old)
+        oracle_diff = list(difflib.unified_diff(old.splitlines(), oracle_new.splitlines(), lineterm="", n=3))
+        pred_diff = list(difflib.unified_diff(old.splitlines(), pred_new.splitlines(), lineterm="", n=3))
+        oracle_patches[path] = "\n".join(oracle_diff[2:])
+        pred_patches[path] = "\n".join(pred_diff[2:])
+
+    similarities = []
+    for path in set(oracle_patches) | set(pred_patches):
+        oracle_patch = oracle_patches.get(path, "")
+        pred_patch = pred_patches.get(path, "")
+        if not oracle_patch or not pred_patch:
+            similarities.append(0.0)
+        else:
+            similarities.append(
+                difflib.SequenceMatcher(None, pred_patch, oracle_patch, autojunk=False).ratio()
+            )
+
+    sim_score = sum(similarities) / len(similarities) if similarities else 0.0
+    if use_matcher_correctness:
+        correctness_score, correctness_meta = compute_patch_similarity_correctness(
+            code_context=code_context,
+            pred_new_content=pred_new_content,
+            oracle_new_content=oracle_new_content,
+        )
+    else:
+        correctness_score, correctness_meta = check_correctness(
+            code_context=code_context,
+            pred_new_content=pred_new_content,
+            use_lint=False,
+            continuous=continuous_correctness,
+        )
+
+    reward = alpha * correctness_score + (1.0 - alpha) * sim_score
+    return reward, {
+        **correctness_meta,
+        "lenient": True,
+        "sim_score": sim_score,
+        "correctness_score": correctness_score,
+        "similarities": similarities,
+    }
+
 def compute_patch_similarity_correctness(
     code_context: dict,
     pred_new_content: dict,
@@ -339,7 +442,15 @@ def calculate_combined_reward(
 
     # Step 2: Format error?
     if sim_score < 0:
-        return FORMAT_PENALTY, sim_meta
+        lenient_reward, lenient_meta = calculate_lenient_combined_reward(
+            code_context=code_context,
+            oracle_new_content=oracle_new_content,
+            output=output,
+            alpha=alpha,
+            continuous_correctness=continuous_correctness,
+            use_matcher_correctness=use_matcher_correctness,
+        )
+        return lenient_reward, {**sim_meta, **lenient_meta}
 
     # Step 3: Re-extract pred_new_content for correctness check
     try:

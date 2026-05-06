@@ -51,7 +51,7 @@ grpo:
   top_k: 50
   min_p: 0.0
   repetition_penalty: 1.0
-  max_new_tokens: 128                 # Memory optimization: reduced from 256
+  max_new_tokens: 256                 # Enough room to close <solution> and SEARCH/REPLACE blocks
   save_steps: 25
   logging_steps: 5
 
