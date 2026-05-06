@@ -21,10 +21,6 @@ import argparse
 import logging
 from pathlib import Path
 
-from data.fetch_gharchive import fetch_prs
-from data.filter_prs import filter_prs
-from data.extract_triples import extract_triples
-from data.build_rag_index import build_index
 from utils.io_utils import read_yaml
 
 logger = logging.getLogger(__name__)
@@ -75,6 +71,8 @@ def validate_config(cfg: dict, stage: str) -> None:
 
 
 def stage_fetch(cfg: dict):
+    from data.fetch_gharchive import fetch_prs
+
     gh = cfg["gharchive"]
     ds = cfg["dataset"]
     output_file = Path(ds["output_dir"]).parent / "raw" / "raw_prs.jsonl"
@@ -89,6 +87,8 @@ def stage_fetch(cfg: dict):
 
 
 def stage_filter(cfg: dict):
+    from data.filter_prs import filter_prs
+
     ds = cfg["dataset"]
     raw_dir = Path(ds["output_dir"]).parent / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -107,6 +107,8 @@ def stage_filter(cfg: dict):
 
 
 def stage_extract(cfg: dict):
+    from data.extract_triples import extract_triples
+
     ds = cfg["dataset"]
     raw_dir = Path(ds["output_dir"]).parent / "raw"
     output_dir = Path(ds["output_dir"])
@@ -121,6 +123,8 @@ def stage_extract(cfg: dict):
 
 
 def stage_index(cfg: dict):
+    from data.build_rag_index import build_index
+
     ds = cfg["dataset"]
     rag = cfg["rag_index"]
 
