@@ -201,3 +201,213 @@ def get_file_size_mb(file_path: Union[str, Path]) -> float:
     """Get file size in megabytes."""
     file_path = Path(file_path)
     return file_path.stat().st_size / (1024 * 1024)
+
+
+def append_jsonl(records: List[Dict[str, Any]], file_path: Union[str, Path]) -> None:
+    """
+    Append records to a JSONL file (append mode).
+
+    Args:
+        records: List of dictionaries to append
+        file_path: Path to JSONL file
+    """
+    file_path = Path(file_path)
+    ensure_dir(file_path.parent)
+
+    with open(file_path, "a", encoding="utf-8") as f:
+        for record in records:
+            json.dump(record, f, ensure_ascii=False)
+            f.write("\n")
+
+    logger.info(f"Appended {len(records)} records to {file_path}")
+
+
+def load_jsonl_id_set(file_path: Union[str, Path], id_field: str = "instance_id") -> set:
+    """
+    Load a set of IDs from a JSONL file (for resume/deduplication).
+
+    Args:
+        file_path: Path to JSONL file
+        id_field: Field name containing the ID
+
+    Returns:
+        Set of IDs from the file
+    """
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        return set()
+
+    ids = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    record_id = record.get(id_field)
+                    if record_id:
+                        ids.add(str(record_id))
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to load ID set from {file_path}: {e}")
+
+    return ids
+
+
+def ensure_parent_dir(file_path: Union[str, Path]) -> Path:
+    """
+    Ensure parent directory of a file exists.
+
+    Args:
+        file_path: Path to file
+
+    Returns:
+        Parent directory path
+    """
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    return file_path.parent
+
+
+def append_jsonl(records: List[Dict[str, Any]], file_path: Union[str, Path]) -> None:
+    """
+    Append records to a JSONL file (append mode).
+
+    Args:
+        records: List of dictionaries to append
+        file_path: Path to JSONL file
+    """
+    file_path = Path(file_path)
+    ensure_dir(file_path.parent)
+
+    with open(file_path, "a", encoding="utf-8") as f:
+        for record in records:
+            json.dump(record, f, ensure_ascii=False)
+            f.write("\n")
+
+    logger.info(f"Appended {len(records)} records to {file_path}")
+
+
+def load_jsonl_id_set(file_path: Union[str, Path], id_field: str = "instance_id") -> set:
+    """
+    Load a set of IDs from a JSONL file (for resume/deduplication).
+
+    Args:
+        file_path: Path to JSONL file
+        id_field: Field name containing the ID
+
+    Returns:
+        Set of IDs from the file
+    """
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        return set()
+
+    ids = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    record_id = record.get(id_field)
+                    if record_id:
+                        ids.add(str(record_id))
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to load ID set from {file_path}: {e}")
+
+    return ids
+
+
+def ensure_parent_dir(file_path: Union[str, Path]) -> Path:
+    """
+    Ensure parent directory of a file exists.
+
+    Args:
+        file_path: Path to file
+
+    Returns:
+        Parent directory path
+    """
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    return file_path.parent
+
+
+def append_jsonl(records: List[Dict[str, Any]], file_path: Union[str, Path]) -> None:
+    """
+    Append records to a JSONL file (append mode).
+
+    Args:
+        records: List of dictionaries to append
+        file_path: Path to JSONL file
+    """
+    file_path = Path(file_path)
+    ensure_dir(file_path.parent)
+
+    with open(file_path, "a", encoding="utf-8") as f:
+        for record in records:
+            json.dump(record, f, ensure_ascii=False)
+            f.write("\n")
+
+    logger.info(f"Appended {len(records)} records to {file_path}")
+
+
+def load_jsonl_id_set(file_path: Union[str, Path], id_field: str = "instance_id") -> set:
+    """
+    Load a set of IDs from a JSONL file (for resume/deduplication).
+
+    Args:
+        file_path: Path to JSONL file
+        id_field: Field name containing the ID
+
+    Returns:
+        Set of IDs from the file
+    """
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        return set()
+
+    ids = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    record_id = record.get(id_field)
+                    if record_id:
+                        ids.add(str(record_id))
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to load ID set from {file_path}: {e}")
+
+    return ids
+
+
+def ensure_parent_dir(file_path: Union[str, Path]) -> Path:
+    """
+    Ensure parent directory of a file exists.
+
+    Args:
+        file_path: Path to file
+
+    Returns:
+        Parent directory path
+    """
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    return file_path.parent

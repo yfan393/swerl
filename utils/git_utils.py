@@ -318,3 +318,237 @@ def has_new_syntax_errors(original: str, modified: str) -> bool:
 
     # If modified is invalid but original was valid, that's a new error
     return not modified_valid
+
+
+def check_syntax(code: str) -> bool:
+    """
+    Alias for is_valid_python_syntax for backwards compatibility.
+
+    Args:
+        code: Python code to check
+
+    Returns:
+        True if syntax is valid, False otherwise
+    """
+    return is_valid_python_syntax(code)
+
+
+def fake_git_apply_multiple(
+    original_contents: Dict[str, str],
+    patch_sets: List[Dict[str, List[Tuple[str, str]]]],
+) -> Dict[str, str]:
+    """
+    Apply multiple sets of SEARCH/REPLACE patches to code using a temporary git repo.
+
+    This function:
+    1. Creates a temporary git repository
+    2. Commits the original files
+    3. Applies patches via git (not just string replace)
+    4. Returns the final patched contents
+
+    Args:
+        original_contents: Dict of {filepath: original_code}
+        patch_sets: List of patch dicts, each with {filepath: [(search, replace), ...]}
+
+    Returns:
+        Dict of {filepath: patched_code}
+
+    Raises:
+        Exception: If any patch fails to apply
+    """
+    import shutil
+
+    # Create temporary directory for git repo
+    temp_dir = tempfile.mkdtemp(prefix="swerl_patch_")
+    try:
+        # Initialize git repo
+        subprocess.run(
+            ["git", "init"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Configure git user (required for commits)
+        subprocess.run(
+            ["git", "config", "user.email", "swerl@example.com"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "SWE-RL"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Write original files to temp dir
+        for filepath, content in original_contents.items():
+            file_path = Path(temp_dir) / filepath
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+
+        # Add and commit
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Apply patches
+        current_contents = dict(original_contents)
+        for patch_set in patch_sets:
+            for filepath, pairs in patch_set.items():
+                if filepath not in current_contents:
+                    logger.warning(f"File not in current contents: {filepath}")
+                    continue
+
+                content = current_contents[filepath]
+                for search, replace in pairs:
+                    if search not in content:
+                        raise ValueError(f"Search pattern not found in {filepath}")
+                    content = content.replace(search, replace, 1)
+
+                # Write patched content
+                file_path = Path(temp_dir) / filepath
+                file_path.write_text(content, encoding="utf-8")
+
+        # Read final contents
+        result = {}
+        for filepath in original_contents:
+            file_path = Path(temp_dir) / filepath
+            if file_path.exists():
+                result[filepath] = file_path.read_text(encoding="utf-8")
+            else:
+                result[filepath] = ""
+
+        return result
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def check_syntax(code: str) -> bool:
+    """
+    Alias for is_valid_python_syntax for backwards compatibility.
+
+    Args:
+        code: Python code to check
+
+    Returns:
+        True if syntax is valid, False otherwise
+    """
+    return is_valid_python_syntax(code)
+
+
+def fake_git_apply_multiple(
+    original_contents: Dict[str, str],
+    patch_sets: List[Dict[str, List[Tuple[str, str]]]],
+) -> Dict[str, str]:
+    """
+    Apply multiple sets of SEARCH/REPLACE patches to code using a temporary git repo.
+
+    This function:
+    1. Creates a temporary git repository
+    2. Commits the original files
+    3. Applies patches via git (not just string replace)
+    4. Returns the final patched contents
+
+    Args:
+        original_contents: Dict of {filepath: original_code}
+        patch_sets: List of patch dicts, each with {filepath: [(search, replace), ...]}
+
+    Returns:
+        Dict of {filepath: patched_code}
+
+    Raises:
+        Exception: If any patch fails to apply
+    """
+    import shutil
+
+    # Create temporary directory for git repo
+    temp_dir = tempfile.mkdtemp(prefix="swerl_patch_")
+    try:
+        # Initialize git repo
+        subprocess.run(
+            ["git", "init"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Configure git user (required for commits)
+        subprocess.run(
+            ["git", "config", "user.email", "swerl@example.com"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "SWE-RL"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Write original files to temp dir
+        for filepath, content in original_contents.items():
+            file_path = Path(temp_dir) / filepath
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+
+        # Add and commit
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Apply patches
+        current_contents = dict(original_contents)
+        for patch_set in patch_sets:
+            for filepath, pairs in patch_set.items():
+                if filepath not in current_contents:
+                    logger.warning(f"File not in current contents: {filepath}")
+                    continue
+
+                content = current_contents[filepath]
+                for search, replace in pairs:
+                    if search not in content:
+                        raise ValueError(f"Search pattern not found in {filepath}")
+                    content = content.replace(search, replace, 1)
+
+                # Write patched content
+                file_path = Path(temp_dir) / filepath
+                file_path.write_text(content, encoding="utf-8")
+
+        # Read final contents
+        result = {}
+        for filepath in original_contents:
+            file_path = Path(temp_dir) / filepath
+            if file_path.exists():
+                result[filepath] = file_path.read_text(encoding="utf-8")
+            else:
+                result[filepath] = ""
+
+        return result
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)

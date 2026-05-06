@@ -270,3 +270,59 @@ def call_api(
     """Quick API call using default client."""
     client = get_client()
     return client.call(messages, model, max_tokens, **kwargs)
+
+
+def parse_thinking_output(output: str) -> tuple:
+    """
+    Parse <think> and <solution> blocks from model output.
+
+    Args:
+        output: Model output text
+
+    Returns:
+        Tuple of (thinking_text, solution_text)
+    """
+    try:
+        think_start = output.find("<think>")
+        think_end = output.find("</think>")
+        solution_start = output.find("<solution>")
+        solution_end = output.find("</solution>")
+
+        if think_start < 0 or think_end < 0 or solution_start < 0 or solution_end < 0:
+            raise ValueError("Missing required tags")
+
+        thinking = output[think_start + 7:think_end].strip()
+        solution = output[solution_start + 10:solution_end].strip()
+
+        return thinking, solution
+    except Exception as e:
+        logger.error(f"Failed to parse output: {e}")
+        return "", output
+
+
+def parse_thinking_output(output: str) -> tuple:
+    """
+    Parse <think> and <solution> blocks from model output.
+
+    Args:
+        output: Model output text
+
+    Returns:
+        Tuple of (thinking_text, solution_text)
+    """
+    try:
+        think_start = output.find("<think>")
+        think_end = output.find("</think>")
+        solution_start = output.find("<solution>")
+        solution_end = output.find("</solution>")
+
+        if think_start < 0 or think_end < 0 or solution_start < 0 or solution_end < 0:
+            raise ValueError("Missing required tags")
+
+        thinking = output[think_start + 7:think_end].strip()
+        solution = output[solution_start + 10:solution_end].strip()
+
+        return thinking, solution
+    except Exception as e:
+        logger.error(f"Failed to parse output: {e}")
+        return "", output

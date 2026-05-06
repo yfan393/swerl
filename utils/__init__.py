@@ -8,6 +8,7 @@ Provides:
   - git_utils: Git operations, patching, code validation
   - token_counter: Token counting and estimation
   - api_client: OpenAI-compatible API wrapper
+  - repo_utils: Git repository operations
 """
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "git_utils",
     "token_counter",
     "api_client",
+    "repo_utils",
 ]
