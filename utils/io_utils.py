@@ -91,19 +91,22 @@ def read_jsonl(file_path: Union[str, Path]) -> List[Dict[str, Any]]:
         return []
 
     records = []
+    skipped = 0
     with open(file_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:  # Skip empty lines
+                skipped += 1
                 continue
             try:
                 record = json.loads(line)
                 records.append(record)
             except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON at line {line_num}: {e}")
-                raise
+                logger.warning(f"Skipping invalid JSON at line {line_num}: {e}")
+                skipped += 1
+                continue  # Skip malformed lines instead of crashing
 
-    logger.info(f"Loaded {len(records)} records from {file_path}")
+    logger.info(f"Loaded {len(records)} records from {file_path} (skipped {skipped} malformed lines)")
     return records
 
 
