@@ -296,7 +296,7 @@ def generate_oracle_all(
         )
         if record_out is None:
             continue
-        append_jsonl(out_path, record_out)
+        append_jsonl([record_out], out_path)
         kept += 1
 
     logger.info(f"Generated {kept} oracle SFT examples -> {output_file}")
