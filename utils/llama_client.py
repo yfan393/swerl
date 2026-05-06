@@ -1,22 +1,23 @@
 """
 llama_client.py
 ===============
-Client for Llama 3.1 models running on a cluster via vLLM, TGI, or similar inference servers.
+OpenAI-compatible client for Llama 3.1 models running on vLLM cluster.
 
-Supports:
-  - Llama 1B, 3B, 8B models
-  - Cluster-based inference via HTTP API
-  - Compatible with OpenAI API format
+Features:
+  - Uses official OpenAI Python package
+  - Works with vLLM's OpenAI-compatible API
+  - Environment variable support (port_vllm)
   - Retry logic and error handling
+  - Usage statistics tracking
 """
 
 import asyncio
-import json
 import logging
+import os
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
-import requests
+from openai import OpenAI, AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -24,43 +25,60 @@ logger = logging.getLogger(__name__)
 
 class LlamaClusterClient:
     """
-    Client for Llama models running on a cluster inference server.
+    OpenAI-compatible client for Llama models on vLLM.
 
-    Works with:
-    - vLLM (text-generation-inference compatible)
-    - Together AI
-    - Fireworks
-    - Any OpenAI-compatible endpoint
+    Uses the official OpenAI Python package to communicate with vLLM's
+    OpenAI-compatible API endpoint.
+
+    Example:
+        client = LlamaClusterClient(port=8000)
+        response = client.call(messages, model="meta-llama/Llama-3.1-8B-Instruct")
     """
 
     def __init__(
         self,
-        endpoint_url: str,
-        model_name: str = "meta-llama/Llama-3.1-8B-Instruct",
+        host: str = "127.0.0.1",
+        port: Optional[int] = None,
+        api_key: str = "EMPTY",
         timeout: int = 120,
         max_retries: int = 3,
-        api_key: Optional[str] = None,
     ):
         """
-        Initialize Llama cluster client.
+        Initialize vLLM client.
 
         Args:
-            endpoint_url: Base URL of the cluster inference server
-                         (e.g., "http://cluster.example.com:8000/v1")
-            model_name: Model identifier on the cluster
+            host: Server hostname (default: 127.0.0.1)
+            port: Server port. If None, reads from port_vllm env var
+            api_key: API key (default: "EMPTY" for vLLM)
             timeout: Request timeout in seconds
-            max_retries: Maximum number of retries on failure
-            api_key: Optional API key if required by the cluster
+            max_retries: Max retries on failure
         """
-        self.endpoint_url = endpoint_url.rstrip("/")
-        self.model_name = model_name
+        # Get port from environment variable or use provided value
+        if port is None:
+            port = int(os.environ.get("port_vllm", 8000))
+
+        self.host = host
+        self.port = port
+        self.base_url = f"http://{host}:{port}/v1"
+        self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
-        self.api_key = api_key
 
-        self.session = requests.Session()
-        if api_key:
-            self.session.headers.update({"Authorization": f"Bearer {api_key}"})
+        # Initialize OpenAI client
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+            timeout=timeout,
+        )
+
+        # Async client
+        self.async_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+            timeout=timeout,
+        )
+
+        logger.info(f"Initialized vLLM client: {self.base_url}")
 
         # Stats tracking
         self.total_input_tokens = 0
@@ -69,6 +87,22 @@ class LlamaClusterClient:
         self.total_errors = 0
         self.total_time_seconds = 0.0
 
+    def get_available_models(self) -> List[str]:
+        """
+        Get list of available models from vLLM server.
+
+        Returns:
+            List of model IDs
+        """
+        try:
+            models = self.client.models.list()
+            model_ids = [model.id for model in models.data]
+            logger.info(f"Available models: {model_ids}")
+            return model_ids
+        except Exception as e:
+            logger.error(f"Failed to fetch models: {e}")
+            return []
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -76,91 +110,92 @@ class LlamaClusterClient:
     def call(
         self,
         messages: List[Dict[str, str]],
+        model: Optional[str] = None,
         max_tokens: int = 2048,
         temperature: float = 0.7,
         top_p: float = 1.0,
-        stop_sequences: Optional[List[str]] = None,
+        stop: Optional[List[str]] = None,
         **kwargs,
     ) -> str:
         """
-        Make a single API call to the Llama cluster.
+        Make a chat completion request to vLLM.
 
         Args:
             messages: Chat messages in OpenAI format
+            model: Model ID (if None, uses first available model)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Nucleus sampling parameter
-            stop_sequences: Sequences to stop generation
-            **kwargs: Additional API parameters
+            stop: Stop sequences
+            **kwargs: Additional parameters (frequency_penalty, presence_penalty, etc.)
 
         Returns:
             Generated text response
 
         Raises:
-            requests.RequestException: If API call fails
+            Exception: If API call fails after retries
         """
         start_time = time.time()
 
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-        }
-
-        if stop_sequences:
-            payload["stop"] = stop_sequences
-
-        payload.update(kwargs)
-
         try:
-            response = self.session.post(
-                f"{self.endpoint_url}/chat/completions",
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
+            # Use first available model if not specified
+            if model is None:
+                available = self.get_available_models()
+                if not available:
+                    raise ValueError("No models available on vLLM server")
+                model = available[0]
+                logger.debug(f"Using default model: {model}")
 
-            result = response.json()
+            # Make API call
+            response = self.client.chat.completions.create(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                **kwargs,
+            )
+
+            # Extract response
+            text = response.choices[0].message.content
 
             # Track usage
-            usage = result.get("usage", {})
-            self.total_input_tokens += usage.get("prompt_tokens", 0)
-            self.total_output_tokens += usage.get("completion_tokens", 0)
+            if response.usage:
+                self.total_input_tokens += response.usage.prompt_tokens
+                self.total_output_tokens += response.usage.completion_tokens
+
             self.total_requests += 1
             elapsed = time.time() - start_time
             self.total_time_seconds += elapsed
 
             logger.debug(
                 f"Request completed in {elapsed:.2f}s "
-                f"({usage.get('completion_tokens', 0)} output tokens)"
+                f"({response.usage.completion_tokens if response.usage else 0} output tokens)"
             )
 
-            # Extract text
-            if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            else:
-                raise ValueError("No choices in API response")
+            return text
 
-        except requests.RequestException as e:
-            logger.error(f"Cluster API call failed: {e}")
+        except Exception as e:
+            logger.error(f"vLLM API call failed: {e}")
             self.total_errors += 1
             raise
 
     async def call_async(
         self,
         messages: List[Dict[str, str]],
+        model: Optional[str] = None,
         max_tokens: int = 2048,
         temperature: float = 0.7,
         top_p: float = 1.0,
         **kwargs,
     ) -> str:
         """
-        Async version of API call.
+        Async version of chat completion.
 
         Args:
             messages: Chat messages
+            model: Model ID
             max_tokens: Maximum tokens
             temperature: Sampling temperature
             top_p: Nucleus sampling
@@ -169,17 +204,47 @@ class LlamaClusterClient:
         Returns:
             Generated text
         """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: self.call(messages, max_tokens, temperature, top_p, **kwargs),
-        )
+        if model is None:
+            available = self.get_available_models()
+            if not available:
+                raise ValueError("No models available")
+            model = available[0]
+
+        start_time = time.time()
+
+        try:
+            response = await self.async_client.chat.completions.create(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                **kwargs,
+            )
+
+            text = response.choices[0].message.content
+
+            if response.usage:
+                self.total_input_tokens += response.usage.prompt_tokens
+                self.total_output_tokens += response.usage.completion_tokens
+
+            self.total_requests += 1
+            elapsed = time.time() - start_time
+            self.total_time_seconds += elapsed
+
+            return text
+
+        except Exception as e:
+            logger.error(f"vLLM async call failed: {e}")
+            self.total_errors += 1
+            raise
 
     def batch_call(
         self,
         message_batches: List[List[Dict[str, str]]],
+        model: Optional[str] = None,
         max_tokens: int = 2048,
-        delay_between_calls: float = 0.5,
+        delay_between_calls: float = 0.1,
         **kwargs,
     ) -> List[str]:
         """
@@ -187,6 +252,7 @@ class LlamaClusterClient:
 
         Args:
             message_batches: List of message lists
+            model: Model ID
             max_tokens: Max tokens per call
             delay_between_calls: Delay between calls (seconds)
             **kwargs: Additional parameters
@@ -200,7 +266,12 @@ class LlamaClusterClient:
                 time.sleep(delay_between_calls)
 
             try:
-                result = self.call(messages, max_tokens=max_tokens, **kwargs)
+                result = self.call(
+                    messages=messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
                 results.append(result)
                 logger.debug(f"Batch {i+1}/{len(message_batches)} completed")
             except Exception as e:
@@ -217,19 +288,21 @@ class LlamaClusterClient:
             else 0
         )
         tokens_per_second = (
-            (self.total_input_tokens + self.total_output_tokens) / self.total_time_seconds
+            (self.total_input_tokens + self.total_output_tokens)
+            / self.total_time_seconds
             if self.total_time_seconds > 0
+            else 0
+        )
+        success_rate = (
+            (self.total_requests - self.total_errors) / self.total_requests * 100
+            if self.total_requests > 0
             else 0
         )
 
         return {
             "total_requests": self.total_requests,
             "total_errors": self.total_errors,
-            "success_rate": (
-                (self.total_requests - self.total_errors) / self.total_requests * 100
-                if self.total_requests > 0
-                else 0
-            ),
+            "success_rate": success_rate,
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_input_tokens + self.total_output_tokens,
@@ -248,32 +321,36 @@ class LlamaClusterClient:
 
 
 # Global client cache
-_llama_clients: Dict[str, LlamaClusterClient] = {}
+_llama_clients: Dict[tuple, LlamaClusterClient] = {}
 
 
 def get_llama_client(
-    endpoint_url: str,
-    model_name: str = "meta-llama/Llama-3.1-8B-Instruct",
-    api_key: Optional[str] = None,
+    host: str = "127.0.0.1",
+    port: Optional[int] = None,
+    api_key: str = "EMPTY",
 ) -> LlamaClusterClient:
     """
-    Get or create a cached Llama cluster client.
+    Get or create a cached vLLM client.
 
     Args:
-        endpoint_url: Cluster inference server URL
-        model_name: Model identifier
-        api_key: Optional API key
+        host: Server hostname
+        port: Server port (uses port_vllm env var if None)
+        api_key: API key
 
     Returns:
         LlamaClusterClient instance
     """
-    cache_key = f"{endpoint_url}:{model_name}"
+    # Use environment variable if port not provided
+    if port is None:
+        port = int(os.environ.get("port_vllm", 8000))
+
+    cache_key = (host, port)
 
     if cache_key not in _llama_clients:
-        logger.info(f"Creating new Llama client for {model_name}")
+        logger.info(f"Creating new vLLM client: {host}:{port}")
         _llama_clients[cache_key] = LlamaClusterClient(
-            endpoint_url=endpoint_url,
-            model_name=model_name,
+            host=host,
+            port=port,
             api_key=api_key,
         )
 
@@ -281,6 +358,6 @@ def get_llama_client(
 
 
 def clear_llama_cache() -> None:
-    """Clear all cached Llama clients."""
+    """Clear all cached vLLM clients."""
     _llama_clients.clear()
-    logger.info("Cleared Llama client cache")
+    logger.info("Cleared vLLM client cache")

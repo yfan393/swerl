@@ -77,10 +77,12 @@ def validate_config(cfg: dict, stage: str) -> None:
 def stage_fetch(cfg: dict):
     gh = cfg["gharchive"]
     ds = cfg["dataset"]
+    output_file = Path(ds["output_dir"]).parent / "raw" / "raw_prs.jsonl"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     fetch_prs(
         start_date=gh["start_date"],
         end_date=gh["end_date"],
-        output_file=str(Path(ds["output_dir"]).parent / "raw" / "raw_prs.jsonl"),
+        output_file=str(output_file),
         max_prs=ds["num_seeds"] * 20,   # Over-fetch to compensate for filtering losses
         max_workers=gh.get("max_workers", 4),
     )
@@ -89,6 +91,7 @@ def stage_fetch(cfg: dict):
 def stage_filter(cfg: dict):
     ds = cfg["dataset"]
     raw_dir = Path(ds["output_dir"]).parent / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     filter_prs(
         input_file=str(raw_dir / "raw_prs.jsonl"),
         output_file=str(raw_dir / "filtered_prs.jsonl"),
@@ -106,6 +109,8 @@ def stage_filter(cfg: dict):
 def stage_extract(cfg: dict):
     ds = cfg["dataset"]
     raw_dir = Path(ds["output_dir"]).parent / "raw"
+    output_dir = Path(ds["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
     extract_triples(
         input_file=str(raw_dir / "filtered_prs.jsonl"),
         output_dir=ds["output_dir"],
@@ -118,6 +123,11 @@ def stage_extract(cfg: dict):
 def stage_index(cfg: dict):
     ds = cfg["dataset"]
     rag = cfg["rag_index"]
+
+    # Create output directories
+    Path(rag["index_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(rag["chunk_meta_path"]).parent.mkdir(parents=True, exist_ok=True)
+
     logger.info(
         "Building RAG index: train_file=%s index=%s chunks=%s embed_model=%s max_chunk_tokens=%s",
         ds["train_file"],

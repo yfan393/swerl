@@ -69,7 +69,7 @@ class ModelComparison:
     def evaluate_model(
         self,
         model_key: str,
-        cluster_endpoint: str,
+        port: Optional[int] = None,
         num_instances: Optional[int] = None,
     ) -> Dict[str, any]:
         """
@@ -77,25 +77,21 @@ class ModelComparison:
 
         Args:
             model_key: Key in config (e.g., 'llama_1b')
-            cluster_endpoint: URL of cluster inference server
+            port: vLLM server port (uses port_vllm env var if None)
             num_instances: Limit number of test instances (for quick eval)
 
         Returns:
             Dictionary with evaluation metrics
         """
         model_config = self.config["models"][model_key]
-        model_name = model_config["model_id"]
+        model_id = model_config["model_id"]
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"Evaluating: {model_key} ({model_name})")
-        logger.info(f"Cluster: {cluster_endpoint}")
+        logger.info(f"Evaluating: {model_key} ({model_id})")
         logger.info(f"{'='*60}\n")
 
-        # Initialize client
-        client = get_llama_client(
-            endpoint_url=cluster_endpoint,
-            model_name=model_name,
-        )
+        # Initialize client (uses port_vllm env var if port=None)
+        client = get_llama_client(port=port)
 
         # Prepare test set
         test_set = self.test_instances
@@ -147,6 +143,7 @@ class ModelComparison:
                 instance_start = time.time()
                 output = client.call(
                     messages=messages,
+                    model=model_id,
                     max_tokens=model_config["max_output_tokens"],
                     temperature=model_config["inference"]["temperature"],
                     top_p=model_config["inference"]["top_p"],
@@ -223,7 +220,7 @@ class ModelComparison:
 
     def run_comparison(
         self,
-        cluster_endpoint: str,
+        port: Optional[int] = None,
         models: Optional[List[str]] = None,
         num_instances: Optional[int] = None,
     ) -> Dict:
@@ -231,7 +228,7 @@ class ModelComparison:
         Run comparison across multiple models.
 
         Args:
-            cluster_endpoint: URL of cluster inference server
+            port: vLLM server port (uses port_vllm env var if None)
             models: List of model keys to evaluate (default: all in config)
             num_instances: Limit test instances per model
 
@@ -242,12 +239,15 @@ class ModelComparison:
             models = self.config["comparison"]["models_to_compare"]
 
         logger.info(f"Starting comparison of {len(models)} models")
-        logger.info(f"Cluster endpoint: {cluster_endpoint}")
+        if port:
+            logger.info(f"vLLM server port: {port}")
+        else:
+            logger.info("Using port_vllm environment variable")
 
         for model_key in models:
             model_results = self.evaluate_model(
                 model_key=model_key,
-                cluster_endpoint=cluster_endpoint,
+                port=port,
                 num_instances=num_instances,
             )
             self.results["models"][model_key] = model_results
@@ -298,7 +298,10 @@ class ModelComparison:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare Llama 3.1 models on code repair")
+    parser = argparse.ArgumentParser(
+        description="Compare Llama 3.1 models on code repair",
+        epilog="Note: vLLM port can be specified via --port or port_vllm environment variable"
+    )
     parser.add_argument(
         "--config",
         default="configs/llama_models.yaml",
@@ -310,9 +313,10 @@ def main():
         help="Path to test instances",
     )
     parser.add_argument(
-        "--cluster",
-        required=True,
-        help="Cluster inference endpoint URL (e.g., http://localhost:8000/v1)",
+        "--port",
+        type=int,
+        default=None,
+        help="vLLM server port (default: uses port_vllm env var, fallback 8000)",
     )
     parser.add_argument(
         "--models",
@@ -342,7 +346,7 @@ def main():
     )
 
     results = comparison.run_comparison(
-        cluster_endpoint=args.cluster,
+        port=args.port,
         models=args.models,
         num_instances=args.num_instances,
     )

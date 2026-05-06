@@ -27,14 +27,17 @@ def train(config_path: str) -> None:
         )
         from trl import GRPOConfig, GRPOTrainer
         from peft import LoraConfig, get_peft_model
+        from datasets import Dataset
     except ImportError as e:
-        logger.warning(f"Missing dependency: {e}, using basic training")
-        return
+        raise RuntimeError(
+            f"Cannot run GRPO training: missing dependency {e}.\n"
+            f"Install with: pip install transformers trl peft datasets"
+        )
     
     # Load config
     model_name = config.get("model", {}).get("name_or_path", "gpt2")
     train_file = config.get("paths", {}).get("train_file", "data/processed/train.jsonl")
-    output_dir = config.get("training", {}).get("output_dir", "outputs/grpo/")
+    output_dir = config.get("paths", {}).get("output_dir", "outputs/grpo/")
     
     # Load training data
     records = read_jsonl(train_file)
@@ -58,18 +61,26 @@ def train(config_path: str) -> None:
     model = get_peft_model(model, lora_config)
     
     # GRPO config
+    # Note: max_steps takes precedence over num_train_epochs
+    max_steps = config.get("grpo", {}).get("max_steps", 300)
+    num_train_epochs = config.get("grpo", {}).get("num_train_epochs", None)
+
     grpo_config = GRPOConfig(
         output_dir=output_dir,
-        num_train_epochs=config.get("grpo", {}).get("num_epochs", 3),
+        max_steps=max_steps,
+        num_train_epochs=num_train_epochs,
         per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 4),
         learning_rate=config.get("training", {}).get("learning_rate", 5e-5),
     )
     
     # Train
+    # Convert list of dicts to HuggingFace Dataset
+    train_dataset = Dataset.from_list(records)
+
     trainer = GRPOTrainer(
         model=model,
         args=grpo_config,
-        train_dataset=records,
+        train_dataset=train_dataset,
         tokenizer=tokenizer,
     )
     

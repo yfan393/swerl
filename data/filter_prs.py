@@ -347,7 +347,23 @@ def filter_prs(
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Filter PRs with GitHub API enrichment",
+        epilog="""
+Examples:
+  # Basic usage (uses GITHUB_TOKEN env var)
+  python -m data.filter_prs \\
+    --input_file data/raw/raw_prs.jsonl \\
+    --max_records 100
+
+  # With token embedded (for cluster)
+  python -m data.filter_prs \\
+    --input_file data/raw/raw_prs.jsonl \\
+    --token <your-github-token> \\
+    --max_records 500 \\
+    --max_workers 32
+        """
+    )
     parser.add_argument("--input_file", default="data/raw/raw_prs.jsonl")
     parser.add_argument("--output_file", default="data/raw/filtered_prs.jsonl")
     parser.add_argument("--max_records", type=int, default=None)
@@ -356,7 +372,31 @@ def main():
     parser.add_argument("--max_files_changed", type=int, default=20)
     parser.add_argument("--min_python_files", type=int, default=1)
     parser.add_argument("--min_diff_chars", type=int, default=50)
+    parser.add_argument(
+        "--token",
+        type=str,
+        default=None,
+        help="GitHub token (overrides GITHUB_TOKEN env var). "
+             "Get one from: https://github.com/settings/tokens"
+    )
+    parser.add_argument(
+        "--bot_suffixes",
+        nargs="+",
+        default=[],
+        help="Bot author name suffixes to skip (e.g. 'bot' 'app'). "
+             "Authors ending with these suffixes will be filtered out."
+    )
     args = parser.parse_args()
+
+    # Set token in environment if provided
+    if args.token:
+        os.environ["GITHUB_TOKEN"] = args.token
+        logger.info("Using GitHub token from --token argument")
+    elif os.environ.get("GITHUB_TOKEN"):
+        logger.info("Using GitHub token from GITHUB_TOKEN environment variable")
+    else:
+        logger.warning("⚠️  No GitHub token found! Filtering will be ~100x slower.")
+        logger.warning("   To speed up: add --token ghp_xxx or set GITHUB_TOKEN env var")
 
     filter_prs(
         input_file=args.input_file,
@@ -367,6 +407,7 @@ def main():
         max_files_changed=args.max_files_changed,
         min_python_files=args.min_python_files,
         min_diff_chars=args.min_diff_chars,
+        bot_suffixes=args.bot_suffixes,
     )
 
 

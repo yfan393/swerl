@@ -50,14 +50,39 @@ class CodeRetriever:
         embed_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     ):
         logger.info(f"Loading FAISS index from {index_path}")
-        self.index = faiss.read_index(str(Path(index_path)))
+        index_file = Path(index_path)
+        if not index_file.exists():
+            raise FileNotFoundError(
+                f"RAG index not found at {index_path}.\n"
+                f"Run: python run.py data --config configs/data_config.yaml"
+            )
+
+        try:
+            self.index = faiss.read_index(str(index_file))
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load FAISS index from {index_path}: {e}\n"
+                f"The index file may be corrupted. Try regenerating with:\n"
+                f"python run.py data --config configs/data_config.yaml"
+            )
 
         logger.info(f"Loading chunk metadata from {chunk_meta_path}")
+        chunk_file = Path(chunk_meta_path)
+        if not chunk_file.exists():
+            raise FileNotFoundError(
+                f"Chunk metadata not found at {chunk_meta_path}.\n"
+                f"Run: python run.py data --config configs/data_config.yaml"
+            )
+
         self.chunks: list[dict] = read_jsonl(chunk_meta_path)
 
-        assert len(self.chunks) == self.index.ntotal, (
-            f"Chunk count mismatch: {len(self.chunks)} chunks vs {self.index.ntotal} vectors"
-        )
+        if len(self.chunks) != self.index.ntotal:
+            raise ValueError(
+                f"Index-chunk mismatch: {self.index.ntotal} vectors in index "
+                f"but {len(self.chunks)} chunks loaded from {chunk_meta_path}.\n"
+                f"Regenerate both files:\n"
+                f"python run.py data --config configs/data_config.yaml"
+            )
 
         logger.info(f"Loading embedding model: {embed_model}")
         self.model = SentenceTransformer(embed_model)

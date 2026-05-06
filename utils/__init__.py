@@ -8,6 +8,7 @@ Provides:
   - git_utils: Git operations, patching, code validation
   - token_counter: Token counting and estimation
   - api_client: OpenAI-compatible API wrapper
+  - llama_client: Llama model inference via vLLM (OpenAI-compatible)
   - repo_utils: Git repository operations
 """
 
@@ -16,5 +17,6 @@ __all__ = [
     "git_utils",
     "token_counter",
     "api_client",
+    "llama_client",
     "repo_utils",
 ]

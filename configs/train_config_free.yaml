@@ -25,7 +25,7 @@
 #   - Together AI free credits or Hugging Face Inference API
 #   - Self-host with Ollama on CPU (slow but completely free):
 #       export OPENAI_BASE_URL=http://localhost:11434/v1
-#       python -m sft.generate_cot_data --model llama3.1:8b
+#       python -m sft.generate_cot_data --model llama3.1:70b
 # ============================================================
 
 model:
@@ -33,8 +33,6 @@ model:
   name_or_path: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
   # ── Option B (Kaggle 2×T4 or Colab Pro) ────────────────────────────
   # name_or_path: "meta-llama/Llama-3.2-3B-Instruct"
-  # ── Option C (Colab Pro+ / A100 with QLoRA) ─────────────────────────
-  # name_or_path: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
   max_length: 4096          # 4k context (saves ~3× memory vs 16k)
   use_lora: true
@@ -99,7 +97,7 @@ sft_baseline:
     max_records: 200
     # To use a free/local OpenAI-compatible endpoint instead:
     # mode: "api"
-    # model: "llama3.1:8b"
+    # model: "llama3.1:70b"
     # max_concurrent: 1
     # max_tokens: 2048
   max_steps: 500

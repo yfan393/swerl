@@ -41,6 +41,7 @@ setup(
     extras_require={
         "dev": ["pytest", "black", "ruff", "pre-commit"],
         "gpu": ["faiss-gpu>=1.8.0", "bitsandbytes>=0.43.0"],
+        "llama": ["vllm>=0.6.0"],  # For Llama model inference via vLLM
         "wandb": ["wandb>=0.17.0"],
     },
 )

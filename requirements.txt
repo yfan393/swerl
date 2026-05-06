@@ -7,18 +7,18 @@
 # PyTorch install for its CPU/GPU setup.
 
 # Base model & training
-torch>=2.2.0
-transformers>=4.45.0
-accelerate>=0.34.0
-peft>=0.12.0
-trl>=0.11.0           # GRPOTrainer
-bitsandbytes>=0.43.0  # 4-bit quantization (optional for inference)
-datasets>=2.21.0
+torch>=2.2.0,<3.0
+transformers>=4.45.0,<5.0
+accelerate>=0.34.0,<1.0
+peft>=0.12.0,<1.0
+trl>=0.11.0,<0.12    # GRPOTrainer (API may change in 0.12+)
+bitsandbytes>=0.43.0,<1.0  # 4-bit quantization (optional for inference)
+datasets>=2.21.0,<3.0
 
 # RAG / Retrieval
-sentence-transformers>=3.0.0
-faiss-cpu>=1.8.0      # use faiss-gpu if GPU available
-numpy>=1.26.0
+sentence-transformers>=3.0.0,<4.0
+faiss-cpu>=1.8.0,<2.0      # use faiss-gpu if GPU available
+numpy>=1.26.0,<2.0
 
 # Data pipeline
 requests>=2.32.0
@@ -35,7 +35,8 @@ astunparse>=1.6.3
 
 # Evaluation & utilities
 tenacity>=8.5.0       # retry logic
-openai>=1.50.0        # optional: only needed for --mode api SFT data generation
+openai>=1.50.0        # For OpenAI API and Llama vLLM inference (OpenAI-compatible)
+vllm>=0.6.0           # optional: only needed for Llama model inference via llama_infer command
 scipy>=1.13.0
 flake8>=7.0.0         # optional reward lint check; skipped gracefully if unavailable
 
