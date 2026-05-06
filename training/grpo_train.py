@@ -89,9 +89,42 @@ def train(config_path: str) -> None:
     # Load reward config
     reward_cfg = config.get("reward", {})
 
+    # Preprocess records: build prompts and ensure required fields
+    from agent.prompts import build_messages
+    import json
+
+    processed_records = []
+    for record in records:
+        problem_statement = record.get("problem_statement", "")
+        code_context = record.get("code_context", "")
+        oracle_new_content = record.get("oracle_new_content", {})
+
+        # Build prompt using same method as SFT
+        messages = build_messages(problem_statement, code_context)
+        prompt_str = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        # Create processed record with required fields for GRPOTrainer and reward function
+        processed_record = {
+            "prompt": prompt_str,
+            "code_context": json.dumps(code_context) if isinstance(code_context, dict) else code_context,
+            "oracle_new_content": json.dumps(oracle_new_content) if isinstance(oracle_new_content, dict) else oracle_new_content,
+        }
+        # Preserve metadata
+        for key in ["instance_id", "repo", "problem_statement"]:
+            if key in record:
+                processed_record[key] = record[key]
+
+        processed_records.append(processed_record)
+
+    logger.info(f"Processed {len(processed_records)} records with prompts")
+
     # Train
     # Convert list of dicts to HuggingFace Dataset
-    train_dataset = Dataset.from_list(records)
+    train_dataset = Dataset.from_list(processed_records)
 
     # Create reward function
     from reward.reward_fn import SWERLRewardFunction
