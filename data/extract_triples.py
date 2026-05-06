@@ -35,7 +35,6 @@ from tqdm import tqdm
 
 # Use upstream git utilities for robust patch application
 from utils.git_utils import (
-    check_syntax,
     check_code_differ_by_just_empty_lines,
 )
 from utils.io_utils import read_jsonl, write_jsonl
@@ -289,6 +288,86 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
     return files
 
 
+def extract_file_versions_from_patch(
+    patch: str,
+    allowed_files: Optional[set[str]] = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Extract old/new file snippets directly from a unified diff.
+
+    PR patches only contain hunks, not complete files. Applying the full patch to
+    reconstructed hunks is fragile because hunk line numbers refer to the real
+    source file, not to the snippet we reconstructed. For training we only need a
+    consistent before/after target, so build both sides from the hunk lines.
+    """
+    original_files: dict[str, list[str]] = {}
+    patched_files: dict[str, list[str]] = {}
+    current_file: Optional[str] = None
+    in_hunk = False
+    diff_headers_found = 0
+
+    def should_keep(path: str) -> bool:
+        return allowed_files is None or path in allowed_files
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git"):
+            diff_headers_found += 1
+            match = re.search(r"^diff --git a/(.+?) b/(.+?)$", line)
+            if match:
+                candidate = match.group(2)
+                current_file = candidate if should_keep(candidate) else None
+                if current_file is not None:
+                    original_files.setdefault(current_file, [])
+                    patched_files.setdefault(current_file, [])
+                    logger.debug("Found file #%s: %s", diff_headers_found, current_file)
+            else:
+                logger.warning("Could not parse diff header: %s", line[:80])
+                current_file = None
+            in_hunk = False
+            continue
+
+        if current_file is None:
+            continue
+
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+
+        if not in_hunk:
+            continue
+
+        if line.startswith("\\"):
+            continue
+
+        if not line:
+            logger.debug("Unexpected empty diff line in %s", current_file)
+            continue
+
+        marker = line[0]
+        content = line[1:]
+
+        if marker == " ":
+            original_files[current_file].append(content)
+            patched_files[current_file].append(content)
+        elif marker == "-":
+            original_files[current_file].append(content)
+        elif marker == "+":
+            patched_files[current_file].append(content)
+
+    original = {path: "\n".join(lines) for path, lines in original_files.items()}
+    patched = {path: "\n".join(lines) for path, lines in patched_files.items()}
+
+    logger.info(
+        "Extracted %s files from patch with %s diff headers found",
+        len(original),
+        diff_headers_found,
+    )
+    for fpath, content in original.items():
+        logger.debug("%s: %s bytes, %s lines", fpath, len(content), len(content.splitlines()))
+
+    return original, patched
+
+
 def extract_triple(
     record: dict,
     repo_cache_dir: str,
@@ -309,29 +388,25 @@ def extract_triple(
         logger.warning(f"Record {instance_id} missing oracle_patch or problem_statement")
         return None
 
-    # Extract file contents directly from the patch
-    # This avoids git operations and uses the patch as the source of truth
+    # Extract before/after snippets directly from the patch. The patch only has
+    # hunk context, so these are not complete files.
     logger.debug(f"Extracting files from patch for {instance_id} ({len(oracle_patch)} chars)")
-    file_contents = extract_files_from_patch(oracle_patch)
+    allowed_files = set(record.get("python_files") or [])
+    file_contents, patched_contents = extract_file_versions_from_patch(
+        oracle_patch,
+        allowed_files=allowed_files or None,
+    )
     logger.info(f"Extracted {len(file_contents)} files for {instance_id}: {list(file_contents.keys())}")
 
     if not file_contents:
         logger.error(f"No files extracted from patch for {instance_id}")
         return None
 
-    # ── Apply the oracle patch via `git apply` (robust to whitespace quirks) ──
-    # Creates a temp git repo, commits the original files,
-    # then runs `git apply` on the full PR diff.
-    try:
-        patched_contents = apply_unified_diff(file_contents, oracle_patch)
-        logger.info(f"Successfully applied patch for {instance_id}: {len(patched_contents)} files patched")
-    except Exception as e:
-        logger.warning(f"Patch application failed for {instance_id}: {e}")
-        return None
-
-    # Only keep files that actually changed and have valid Python syntax
+    # Only keep files that actually changed
+    # NOTE: We skip syntax validation because extracted files from diffs are partial
+    # (only hunks + context are in diffs, not complete files), so they'll have syntax errors
     oracle_new_content: dict[str, str] = {}
-    skipped_reasons = {"unchanged": 0, "syntax_error": 0, "whitespace_only": 0}
+    skipped_reasons = {"unchanged": 0, "whitespace_only": 0}
 
     for fpath, new_content in patched_contents.items():
         original = file_contents.get(fpath, "")
@@ -339,11 +414,6 @@ def extract_triple(
             logger.debug(f"Skipping {fpath}: content unchanged after patch")
             skipped_reasons["unchanged"] += 1
             continue   # patch didn't touch this file
-        if not check_syntax(new_content):
-            logger.debug(f"Skipping {fpath}: broken syntax after patch")
-            logger.debug(f"  Original syntax valid: {check_syntax(original)}")
-            skipped_reasons["syntax_error"] += 1
-            continue   # broken output — skip
         if check_code_differ_by_just_empty_lines(new_content, original):
             logger.debug(f"Skipping {fpath}: only whitespace changes")
             skipped_reasons["whitespace_only"] += 1
@@ -352,7 +422,7 @@ def extract_triple(
         logger.info(f"Keeping {fpath}: {len(new_content)} chars, {len(original)} chars original")
 
     if not oracle_new_content:
-        # Patch applied but produced no meaningful Python changes — skip
+        # Patch applied but produced no meaningful changes — skip
         logger.warning(f"No meaningful changes for {instance_id}: {skipped_reasons}")
         return None
 
