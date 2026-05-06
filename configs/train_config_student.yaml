@@ -24,12 +24,12 @@ model:
     bias: "none"
 
 grpo:
-  num_generations: 1              # Must be divisible by per_device_train_batch_size (1)
+  num_generations: 2              # GRPO requires >= 2 to compute advantages (compare 2 completions)
   num_problems_per_step: 1
   beta: 0.001
   clip_epsilon: 0.2
   max_steps: 50
-  per_device_train_batch_size: 1      # Memory optimization: reduced from implicit 8
+  per_device_train_batch_size: 1      # Memory optimization: 1 prompt × 2 generations = 2 total per step
   learning_rate: 1.0e-6
   lr_scheduler: "cosine"
   warmup_steps: 5

@@ -74,7 +74,7 @@ def train(config_path: str) -> None:
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=grpo_cfg.get("per_device_train_batch_size", config.get("training", {}).get("per_device_train_batch_size", 1)),
         learning_rate=grpo_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 5e-5)),
-        num_generations=grpo_cfg.get("num_generations", 1),
+        num_generations=grpo_cfg.get("num_generations", 2),
         gradient_accumulation_steps=grpo_cfg.get("gradient_accumulation_steps", 1),
         logging_steps=grpo_cfg.get("logging_steps", 10),
         save_steps=grpo_cfg.get("save_steps", 100),
