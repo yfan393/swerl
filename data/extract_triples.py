@@ -158,11 +158,21 @@ def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[
                 capture_output=True,
             )
 
-        # If 3-way fails, try with fuzzy matching
+        # If 3-way fails, try with reduced context requirements
         if result.returncode != 0:
-            logger.debug(f"3-way merge failed, trying fuzzy matching")
+            logger.debug(f"3-way merge failed, trying with reduced context (-C 1)")
             result = subprocess.run(
-                ["git", "apply", "--fuzz=2"],
+                ["git", "apply", "-C1"],
+                input=patch_text.encode("utf-8"),
+                cwd=temp_dir,
+                capture_output=True,
+            )
+
+        # If still failing, try with unidiff-zero (for zero-context patches)
+        if result.returncode != 0:
+            logger.debug(f"Reduced context failed, trying with unidiff-zero")
+            result = subprocess.run(
+                ["git", "apply", "--unidiff-zero"],
                 input=patch_text.encode("utf-8"),
                 cwd=temp_dir,
                 capture_output=True,
