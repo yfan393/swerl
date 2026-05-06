@@ -52,6 +52,14 @@ grpo:
   min_p: 0.0
   repetition_penalty: 1.0
   max_new_tokens: 256                 # Enough room to close <solution> and SEARCH/REPLACE blocks
+  # Truncate prompts so a single long code-context blob can't blow up the
+  # backward-pass batch memory. With max_prompt_length=1024 + max_new_tokens=256
+  # each sequence is at most 1280 tokens; 2 sequences per step ≈ 2.5k tokens.
+  max_prompt_length: 1024
+  # Activation checkpointing: ~5-10x reduction in backward-pass memory.
+  # Required for the run to fit in 22GB GPUs (otherwise OOMs around step 8
+  # when rollouts hit max_new_tokens).
+  gradient_checkpointing: true
   save_steps: 25
   logging_steps: 5
 

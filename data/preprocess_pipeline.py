@@ -81,7 +81,7 @@ def stage_fetch(cfg: dict):
         start_date=gh["start_date"],
         end_date=gh["end_date"],
         output_file=str(output_file),
-        max_prs=ds["num_seeds"] * 20,   # Over-fetch to compensate for filtering losses
+        max_prs=ds["num_seeds"] * 100,   # Over-fetch to compensate for filtering losses
         max_workers=gh.get("max_workers", 4),
     )
 

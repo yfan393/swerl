@@ -178,6 +178,10 @@ def fetch_prs(
 
                 prs = future.result()
                 for pr in prs:
+                    if max_prs and total_written >= max_prs:
+                        for f in futures:
+                            f.cancel()
+                        break
                     key = f"{pr['repo']}#{pr['pr_number']}"
                     if key in seen_prs:
                         continue

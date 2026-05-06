@@ -38,7 +38,18 @@ def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str
         "weight_decay": grpo_cfg.get("weight_decay", 0.0),
         "bf16": False,
         "fp16": False,
+        # Gradient checkpointing trades ~30% extra compute for a ~5-10x
+        # reduction in activation memory during backward(). On 22GB GPUs
+        # the GRPO backward pass otherwise OOMs once any rollout reaches
+        # the full max_completion_length. Default ON, opt-out via yaml.
+        "gradient_checkpointing": grpo_cfg.get("gradient_checkpointing", True),
     }
+    if "gradient_checkpointing_kwargs" in inspect.signature(GRPOConfig).parameters:
+        # use_reentrant=False is required for LoRA + checkpointing to keep
+        # the autograd graph connected through the adapter forward pass.
+        kwargs["gradient_checkpointing_kwargs"] = grpo_cfg.get(
+            "gradient_checkpointing_kwargs", {"use_reentrant": False}
+        )
     optional_mappings = {
         "beta": "beta",
         "epsilon": "clip_epsilon",
@@ -48,6 +59,9 @@ def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str
         # will retry without unsupported keys.
         "max_completion_length": "max_new_tokens",
         "max_new_tokens": "max_new_tokens",
+        # Caps the prompt side of each sequence. Without this, a single
+        # huge code-context blob can blow memory in the per-step batch.
+        "max_prompt_length": "max_prompt_length",
         "temperature": "generation_temperature",
         "optim": "optimizer",
         # Sampling-stability params: filtering the distribution before
@@ -147,6 +161,14 @@ def _stabilize_generation_config(model, tokenizer, grpo_cfg: dict | None = None)
     temp = grpo_cfg.get("generation_temperature", getattr(generation_config, "temperature", 1.0))
     generation_config.temperature = max(float(temp), 1e-3)
     generation_config.do_sample = True
+    # Pin max_new_tokens at the model's generation_config level. Different
+    # TRL versions plumb completion length through different field names
+    # (max_completion_length vs max_new_tokens vs neither). Setting it here
+    # ensures the completion budget actually shrinks to what the user asked
+    # for, which directly bounds backward-pass memory.
+    if "max_new_tokens" in grpo_cfg:
+        generation_config.max_new_tokens = int(grpo_cfg["max_new_tokens"])
+        generation_config.max_length = None  # avoid TRL warnings about both being set
 
 
 def train(config_path: str) -> None:
@@ -258,6 +280,37 @@ def train(config_path: str) -> None:
         model = get_peft_model(model, lora_config)
     if hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
+
+    # When gradient checkpointing is enabled with PEFT/LoRA on a frozen
+    # base model, two extra steps are needed for autograd to actually
+    # connect through the adapters:
+    #   1. enable_input_require_grads() on the embedding layer, otherwise
+    #      the checkpoint segment has no leaf with requires_grad=True and
+    #      the backward graph collapses.
+    #   2. gradient_checkpointing_enable(use_reentrant=False) on the model
+    #      itself, since TRL's TrainingArguments flag alone doesn't always
+    #      apply when the model is wrapped by PEFT.
+    if grpo_cfg.get("gradient_checkpointing", True):
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            input_embeddings = model.get_input_embeddings()
+
+            def _make_inputs_require_grad(_module, _inputs, output):
+                output.requires_grad_(True)
+
+            input_embeddings.register_forward_hook(_make_inputs_require_grad)
+        if hasattr(model, "gradient_checkpointing_enable"):
+            try:
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except TypeError:
+                model.gradient_checkpointing_enable()
+        # use_cache must be off when checkpointing or HF will warn loudly
+        # and silently disable checkpointing in some versions.
+        if hasattr(model, "config"):
+            model.config.use_cache = False
 
     # GRPO config
     # Note: max_steps takes precedence over num_train_epochs
