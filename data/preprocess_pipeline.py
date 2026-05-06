@@ -148,6 +148,8 @@ def stage_index(cfg: dict):
         max_chunk_tokens=rag.get("max_chunk_tokens", 512),
         chunk_level=rag.get("chunk_level", "function"),
         faiss_index_type=rag.get("faiss_index_type", "Flat"),
+        device=rag.get("device", "cuda:0"),
+        fallback_to_hashing=rag.get("fallback_to_hashing", True),
     )
 
 

@@ -31,12 +31,13 @@ Usage:
 
 import argparse
 import ast
+import hashlib
 import logging
+import re
 from pathlib import Path
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 from utils.io_utils import read_jsonl, write_jsonl
 
@@ -44,6 +45,77 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 DEFAULT_MAX_CHUNK_CHARS = 2000   # truncate very long functions/classes
+HASH_EMBED_DIM = 384
+
+
+def load_sentence_transformer_class():
+    """
+    Import SentenceTransformer with compatibility for older installs.
+
+    Some cluster environments pair old sentence-transformers releases with new
+    huggingface_hub releases. Older sentence-transformers imports
+    huggingface_hub.cached_download, which was removed upstream. Patch that
+    symbol before importing so the index stage can run in those environments.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        return SentenceTransformer
+    except ImportError as exc:
+        if "cached_download" not in str(exc):
+            raise
+
+    import huggingface_hub
+
+    if not hasattr(huggingface_hub, "cached_download"):
+        from huggingface_hub import hf_hub_download
+
+        def cached_download(url: str, cache_dir: str | None = None, **kwargs):
+            match = re.match(
+                r"https?://huggingface\.co/([^/]+/[^/]+)/resolve/([^/]+)/(.+)",
+                url,
+            )
+            if not match:
+                raise ImportError(
+                    "sentence-transformers in this environment expects "
+                    "huggingface_hub.cached_download. Install "
+                    "sentence-transformers>=3.0 or huggingface_hub<0.26, "
+                    f"or use a standard Hugging Face model URL. Got: {url}"
+                )
+
+            repo_id, revision, filename = match.groups()
+            token = kwargs.get("token") or kwargs.get("use_auth_token")
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                cache_dir=cache_dir,
+                token=token,
+            )
+
+        huggingface_hub.cached_download = cached_download
+
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer
+
+
+def encode_texts_with_hashing(texts: list[str], dim: int = HASH_EMBED_DIM) -> np.ndarray:
+    """Build deterministic normalized bag-of-token embeddings without model deps."""
+    embeddings = np.zeros((len(texts), dim), dtype=np.float32)
+    token_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\S")
+
+    for row, text in enumerate(texts):
+        for token in token_pattern.findall(text.lower()):
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            value = int.from_bytes(digest, "little")
+            col = value % dim
+            sign = 1.0 if (value >> 63) == 0 else -1.0
+            embeddings[row, col] += sign
+
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return embeddings / norms
 
 
 def extract_chunks_from_source(
@@ -130,6 +202,8 @@ def build_index(
     max_chunk_tokens: int = 512,
     chunk_level: str = "function",
     faiss_index_type: str = "Flat",
+    device: str = "cuda:0",
+    fallback_to_hashing: bool = True,
 ):
     """
     Full pipeline:
@@ -188,23 +262,37 @@ def build_index(
             "check that processed records contain file_contents."
         )
 
-    logger.info(f"Loading embedding model: {embed_model_name}")
-    model = SentenceTransformer(embed_model_name)
-    embedding_dim = model.get_sentence_embedding_dimension()
-    logger.info(f"Embedding dimension: {embedding_dim}")
-
     texts = [
         f"{chunk['file_path']} :: {chunk['name']}\n{chunk['content']}"
         for chunk in all_chunks
     ]
 
-    all_embeddings = []
-    for i in tqdm(range(0, len(texts), batch_size), desc="Embedding chunks"):
-        batch = texts[i: i + batch_size]
-        embs = model.encode(batch, show_progress_bar=False, normalize_embeddings=True)
-        all_embeddings.append(embs)
+    try:
+        logger.info(f"Loading embedding model: {embed_model_name}")
+        SentenceTransformer = load_sentence_transformer_class()
+        model = SentenceTransformer(embed_model_name, device=device)
+        embedding_dim = model.get_sentence_embedding_dimension()
+        logger.info(f"Embedding dimension: {embedding_dim}")
 
-    embeddings = np.vstack(all_embeddings).astype("float32")
+        all_embeddings = []
+        for i in tqdm(range(0, len(texts), batch_size), desc="Embedding chunks"):
+            batch = texts[i: i + batch_size]
+            embs = model.encode(batch, show_progress_bar=False, normalize_embeddings=True)
+            all_embeddings.append(embs)
+
+        embeddings = np.vstack(all_embeddings).astype("float32")
+    except Exception as exc:
+        if not fallback_to_hashing:
+            raise
+        logger.warning(
+            "SentenceTransformer embeddings unavailable (%s). "
+            "Falling back to deterministic hashing embeddings.",
+            exc,
+        )
+        embeddings = encode_texts_with_hashing(texts).astype("float32")
+        embedding_dim = embeddings.shape[1]
+        logger.info(f"Hash embedding dimension: {embedding_dim}")
+
     logger.info(f"Embeddings shape: {embeddings.shape}")
 
     index = faiss.IndexFlatIP(embedding_dim)
@@ -233,6 +321,8 @@ def main():
     parser.add_argument("--max_chunk_tokens", type=int, default=512)
     parser.add_argument("--chunk_level", default="function")
     parser.add_argument("--faiss_index_type", default="Flat")
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--no_fallback_to_hashing", action="store_true")
     args = parser.parse_args()
 
     build_index(
@@ -244,6 +334,8 @@ def main():
         max_chunk_tokens=args.max_chunk_tokens,
         chunk_level=args.chunk_level,
         faiss_index_type=args.faiss_index_type,
+        device=args.device,
+        fallback_to_hashing=not args.no_fallback_to_hashing,
     )
 
 

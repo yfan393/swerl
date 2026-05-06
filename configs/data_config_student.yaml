@@ -45,3 +45,5 @@ rag_index:
   faiss_index_type: "Flat"
   index_path: "data/rag/faiss.index"
   chunk_meta_path: "data/rag/chunks.jsonl"
+  device: "cpu"  # V100 (CC 7.0) can't run transformers on PyTorch 2.0.1, use CPU for indexing
+  fallback_to_hashing: true
