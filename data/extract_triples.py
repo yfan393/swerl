@@ -26,6 +26,8 @@ import logging
 import os
 import random
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +35,6 @@ from tqdm import tqdm
 
 # Use upstream git utilities for robust patch application
 from utils.git_utils import (
-    fake_git_apply_multiple,
     check_syntax,
     check_code_differ_by_just_empty_lines,
 )
@@ -69,12 +70,111 @@ def build_full_code_context(file_contents: dict[str, str], max_chars: int = MAX_
     return "\n\n".join(parts)
 
 
+def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[str, str]:
+    """
+    Apply unified diff to files using git apply.
+
+    This is more robust than manual parsing as it handles:
+    - Context lines, added lines, removed lines
+    - Binary files
+    - Renames, deletes, creates
+    - Edge cases in diff format
+
+    Args:
+        original_files: Dict of {filepath: content}
+        patch_text: Unified diff text
+
+    Returns:
+        Dict of {filepath: patched_content}
+
+    Raises:
+        Exception if patch cannot be applied
+    """
+    import shutil
+
+    # Create temp directory for git repo
+    temp_dir = tempfile.mkdtemp(prefix="swerl_diff_")
+    try:
+        # Initialize bare git repo
+        subprocess.run(
+            ["git", "init"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Configure git user
+        subprocess.run(
+            ["git", "config", "user.email", "swerl@example.com"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "SWE-RL"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Write original files
+        for filepath, content in original_files.items():
+            file_path = Path(temp_dir) / filepath
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+
+        # Commit original files
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "original"],
+            cwd=temp_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Apply patch using git apply
+        result = subprocess.run(
+            ["git", "apply"],
+            input=patch_text.encode("utf-8"),
+            cwd=temp_dir,
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            error_msg = result.stderr.decode("utf-8", errors="ignore")
+            raise RuntimeError(f"git apply failed: {error_msg}")
+
+        # Read patched files
+        patched_files = {}
+        for filepath in original_files:
+            file_path = Path(temp_dir) / filepath
+            if file_path.exists():
+                patched_files[filepath] = file_path.read_text(encoding="utf-8")
+            else:
+                # File was deleted by patch
+                patched_files[filepath] = ""
+
+        return patched_files
+
+    finally:
+        # Clean up
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def extract_files_from_patch(patch: str) -> dict[str, str]:
     """
     Extract pre-patch file contents directly from unified diff format.
 
     Returns dict mapping file_path -> original content.
-    This avoids git operations and directly parses the diff.
+    This reconstructs the original file by:
+    - Including all context lines (prefix: space)
+    - Including all removed lines (prefix: -)
+    - Excluding all added lines (prefix: +)
     """
     files = {}
     current_file = None
@@ -86,7 +186,11 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
         if line.startswith('diff --git'):
             # Save previous file if any
             if current_file is not None and current_content:
+                # Remove trailing empty lines from reconstruction
+                while current_content and current_content[-1] == '':
+                    current_content.pop()
                 files[current_file] = '\n'.join(current_content)
+                logger.debug(f"Extracted {current_file}: {len(current_content)} lines")
 
             # Extract path: "a/path/to/file" -> "path/to/file"
             match = re.search(r'^diff --git a/(.+?) b/.+?$', line)
@@ -94,12 +198,17 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
                 current_file = match.group(1)
                 current_content = []
                 in_file_diff = True
+                logger.debug(f"Starting to parse file: {current_file}")
             else:
                 current_file = None
                 in_file_diff = False
 
         # Skip git metadata lines (---, +++, index, new file, deleted file, etc.)
-        elif line.startswith(('---', '+++', 'index ', 'new file', 'deleted file', 'similarity', 'rename')):
+        elif line.startswith(('index ', 'new file', 'deleted file', 'similarity', 'rename')):
+            continue
+
+        # Skip "--- " and "+++ " file headers
+        elif line.startswith('---') or line.startswith('+++'):
             continue
 
         # Skip diff hunk headers (@@)
@@ -110,32 +219,30 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
         elif line.startswith('\\'):
             continue
 
-        # Context lines start with space - include content after the space
-        elif in_file_diff and line.startswith(' ') and current_file is not None:
-            # Strip the leading space to get original content
-            current_content.append(line[1:])
-
-        # Removed lines start with '-' - include content after the '-'
-        # These are part of the original file (pre-patch)
-        elif in_file_diff and line.startswith('-') and current_file is not None:
-            # Only include if it's a removed line (not a diff header like "---")
-            if not line.startswith('---'):
+        # Process diff content lines
+        elif in_file_diff and current_file is not None:
+            if len(line) == 0:
+                # Empty line - part of the file
+                current_content.append('')
+            elif line[0] == ' ':
+                # Context line - part of original file, strip leading space
                 current_content.append(line[1:])
-
-        # Added lines start with '+' - skip these, they're post-patch
-        elif in_file_diff and line.startswith('+'):
-            if not line.startswith('+++'):
-                # This is new content added by the patch, skip it
+            elif line[0] == '-':
+                # Removed line - part of original file, strip leading minus
+                current_content.append(line[1:])
+            elif line[0] == '+':
+                # Added line - skip, not part of original
                 pass
-
-        # Empty lines (just a newline)
-        elif in_file_diff and line == '' and current_file is not None:
-            current_content.append('')
+            # else: shouldn't happen in well-formed diff
 
     # Don't forget the last file
     if current_file is not None and current_content:
+        while current_content and current_content[-1] == '':
+            current_content.pop()
         files[current_file] = '\n'.join(current_content)
+        logger.debug(f"Extracted {current_file}: {len(current_content)} lines")
 
+    logger.debug(f"Total files extracted from patch: {len(files)}")
     return files
 
 
@@ -161,25 +268,21 @@ def extract_triple(
 
     # Extract file contents directly from the patch
     # This avoids git operations and uses the patch as the source of truth
+    logger.debug(f"Extracting files from patch for {instance_id} ({len(oracle_patch)} chars)")
     file_contents = extract_files_from_patch(oracle_patch)
+    logger.info(f"Extracted {len(file_contents)} files for {instance_id}: {list(file_contents.keys())}")
 
     if not file_contents:
-        logger.warning(f"No files extracted from patch for {instance_id}")
+        logger.error(f"No files extracted from patch for {instance_id}")
         return None
 
     # ── Apply the oracle patch via `git apply` (robust to whitespace quirks) ──
-    # fake_git_apply_multiple() creates a temp git repo, commits the original
-    # files, then runs `git apply` on the full PR diff.  This is the same
-    # approach the original swe-rl-main uses for normalising patches.
-    os.makedirs(PLAYGROUND_DIR, exist_ok=True)
+    # Creates a temp git repo, commits the original files,
+    # then runs `git apply` on the full PR diff.
     try:
-        patched_contents = fake_git_apply_multiple(
-            repo_playground=PLAYGROUND_DIR,
-            file_path_contents=file_contents,
-            patch=oracle_patch,
-        )
+        patched_contents = apply_unified_diff(file_contents, oracle_patch)
     except Exception as e:
-        logger.debug(f"fake_git_apply_multiple failed for {instance_id}: {e}")
+        logger.debug(f"Patch application failed for {instance_id}: {e}")
         return None
 
     # Only keep files that actually changed and have valid Python syntax

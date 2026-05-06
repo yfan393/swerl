@@ -112,22 +112,23 @@ def fetch_pr_details(
     """
     Fetch PR diff and files from GitHub API.
     Returns dict with 'files', 'diff_text' or None on failure.
+
+    IMPORTANT: Fetches the COMPLETE patch using .patch endpoint,
+    not the truncated patch from /files endpoint.
     """
-    # Get list of changed files
+    # Get list of changed files (for metadata only, patch is truncated here)
     files_url = f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/files"
     files = github_get(session, files_url)
     if not files or not isinstance(files, list):
         return None
 
-    # Collect Python files with their diffs
+    # Collect Python files metadata
     python_files = []
-    all_diff_text = []
     total_additions = 0
     total_deletions = 0
 
     for f in files:
         filename = f.get("filename", "")
-        patch = f.get("patch", "")
 
         configured_skip = any(
             fnmatch.fnmatch(filename, pattern) for pattern in (skip_patterns or [])
@@ -137,10 +138,8 @@ def fetch_pr_details(
 
         if filename.endswith(".py"):
             python_files.append(filename)
-            if patch:
-                all_diff_text.append(f"diff --git a/{filename} b/{filename}\n{patch}")
-                total_additions += f.get("additions", 0)
-                total_deletions += f.get("deletions", 0)
+            total_additions += f.get("additions", 0)
+            total_deletions += f.get("deletions", 0)
 
     if len(python_files) < min_python_files:
         return None
@@ -148,18 +147,33 @@ def fetch_pr_details(
     if len(python_files) > max_files_changed:
         return None
 
-    diff_text = "\n".join(all_diff_text)
-    if len(diff_text) > max_diff_chars:
-        return None
-
-    if len(diff_text) < min_diff_chars:
-        return None
-
     if total_additions + total_deletions < 3:
         return None  # Diff too small
 
     if total_additions + total_deletions > 5000:
         return None  # Diff too large
+
+    # Fetch COMPLETE patch using .patch endpoint (not truncated)
+    patch_url = f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}"
+    # Use Accept header to get patch format instead of JSON
+    headers = session.headers.copy()
+    headers["Accept"] = "application/vnd.github.v3.patch"
+
+    try:
+        resp = session.get(patch_url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            logger.warning(f"Failed to fetch complete patch for {repo}#{pr_number}: {resp.status_code}")
+            return None
+        diff_text = resp.text
+    except Exception as e:
+        logger.warning(f"Error fetching complete patch for {repo}#{pr_number}: {e}")
+        return None
+
+    if len(diff_text) > max_diff_chars:
+        return None
+
+    if len(diff_text) < min_diff_chars:
+        return None
 
     return {
         "python_files": python_files,
