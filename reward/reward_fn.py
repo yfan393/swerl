@@ -36,10 +36,20 @@ from utils.git_utils import check_code_differ_by_just_empty_lines, lint_code
 
 logger = logging.getLogger(__name__)
 
-# Add swe-rl-main to path so we can import the upstream reward utilities
-_SWERL_SRC = Path(__file__).parents[2] / "swe-rl-main" / "src"
-if _SWERL_SRC.exists() and str(_SWERL_SRC) not in sys.path:
-    sys.path.insert(0, str(_SWERL_SRC))
+# Try several plausible locations for the upstream swe-rl utilities so the
+# import works regardless of whether the user deployed only the `swerl/`
+# package or the full `swe-rl-main/` repo alongside it. If none of them
+# exist (e.g. on a cluster that only has the student's package), the
+# bundled fallback below is functionally equivalent for our reward path.
+_candidate_swerl_srcs = [
+    Path(__file__).parents[2] / "swe-rl-main" / "src",
+    Path(__file__).parents[3] / "swe-rl-main" / "src",
+    Path(os.environ.get("SWERL_SRC", "")) if os.environ.get("SWERL_SRC") else None,
+]
+for _src in _candidate_swerl_srcs:
+    if _src and _src.exists() and str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+        break
 
 try:
     from swerl.core.reward import (
@@ -51,8 +61,11 @@ try:
     )
     _UPSTREAM_AVAILABLE = True
 except ImportError:
-    logger.warning(
-        "swerl.core.reward not found on sys.path — using bundled fallback."
+    # Bundled fallback below is feature-complete for the rewards we need.
+    # Keep the message at info level so it doesn't look like a real error.
+    logger.info(
+        "Using bundled SWE-RL reward implementation "
+        "(set $SWERL_SRC to use upstream)."
     )
     _UPSTREAM_AVAILABLE = False
 
@@ -162,16 +175,40 @@ def _parse_search_replace_lenient(text: str) -> dict:
 
 
 def _format_shaping_reward(output: str) -> tuple[float, dict]:
+    """
+    Graded shaping reward for partial format compliance.
+
+    Returns a value in [-1.0, 0.6] so cold-start GRPO (no SFT) has a real
+    gradient toward producing the SWE-RL output schema.
+
+    Old behavior clamped the score to <= -0.1, which left every rollout at
+    exactly -1.0 when the base model produced none of the format tags. With
+    every reward identical, the GRPO group advantage was 0 and no learning
+    happened. This version gives a positive bonus for each tag emitted, so
+    even a model that has never seen the schema can climb toward it.
+    """
     checks = {
         "has_think_start": "<think>" in output,
         "has_think_end": "</think>" in output,
         "has_solution_start": "<solution>" in output,
+        "has_solution_end": "</solution>" in output,
         "has_search": "<<<<<<< SEARCH" in output,
-        "has_separator": "=======" in output,
+        "has_separator": "\n=======\n" in output,
         "has_replace": ">>>>>>> REPLACE" in output,
+        "has_codefence": "```" in output,
     }
-    score = FORMAT_PENALTY + sum(0.1 for passed in checks.values() if passed)
-    return min(score, -0.1), {"format_shaping": checks}
+    n_passed = sum(1 for passed in checks.values() if passed)
+    n_total = len(checks)
+    if n_passed == 0:
+        # No format tags at all: keep the strong floor so a clearly-wrong
+        # output is still penalized.
+        score = FORMAT_PENALTY
+    else:
+        # Linearly interpolate from a small positive (one tag) up to ~0.6
+        # (all tags). Anything above this still requires actual code change
+        # validity, scored by the lenient/strict reward paths above us.
+        score = 0.6 * (n_passed / n_total)
+    return score, {"format_shaping": checks, "format_tags_passed": n_passed}
 
 
 def calculate_lenient_combined_reward(

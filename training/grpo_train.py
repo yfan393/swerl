@@ -42,7 +42,12 @@ def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str
     optional_mappings = {
         "beta": "beta",
         "epsilon": "clip_epsilon",
+        # Try both TRL parameter names for max generation length. Different
+        # TRL versions expose this as max_completion_length OR max_new_tokens
+        # OR neither (defaulting to 256). The build-then-fallback loop below
+        # will retry without unsupported keys.
         "max_completion_length": "max_new_tokens",
+        "max_new_tokens": "max_new_tokens",
         "temperature": "generation_temperature",
         "optim": "optimizer",
         # Sampling-stability params: filtering the distribution before
@@ -58,7 +63,42 @@ def _make_grpo_config(GRPOConfig, grpo_cfg: dict, log_cfg: dict, output_dir: str
     for arg_name, cfg_name in optional_mappings.items():
         if cfg_name in grpo_cfg and _supports_parameter(GRPOConfig, arg_name):
             kwargs[arg_name] = grpo_cfg[cfg_name]
-    return GRPOConfig(**kwargs)
+
+    # If neither max_completion_length nor max_new_tokens was accepted by
+    # the inspect.signature gate, fall back to setting the most likely TRL
+    # name unconditionally. We'll catch a TypeError and strip it on retry.
+    if (
+        "max_new_tokens" in grpo_cfg
+        and "max_completion_length" not in kwargs
+        and "max_new_tokens" not in kwargs
+    ):
+        kwargs["max_completion_length"] = grpo_cfg["max_new_tokens"]
+
+    logger.info(
+        "Constructing GRPOConfig with: "
+        + ", ".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+    )
+
+    # Build with retry: if a kwarg isn't supported by this TRL version,
+    # strip it and try again. This keeps the function tolerant of TRL
+    # API drift between versions without losing the params we need.
+    while True:
+        try:
+            return GRPOConfig(**kwargs)
+        except TypeError as exc:
+            msg = str(exc)
+            removed = None
+            for key in list(kwargs.keys()):
+                if key in msg and "unexpected keyword argument" in msg:
+                    kwargs.pop(key)
+                    removed = key
+                    break
+            if removed is None:
+                raise
+            logger.warning(
+                "GRPOConfig does not accept %r in this TRL version; dropping and retrying.",
+                removed,
+            )
 
 
 def _select_model_dtype(torch, model_cfg: dict, grpo_cfg: dict):
@@ -181,10 +221,31 @@ def train(config_path: str) -> None:
 
     # Apply LoRA
     sft_final_dir = Path(config.get("sft_baseline", {}).get("output_dir", "")) / "final"
-    if config.get("grpo", {}).get("init_from_sft", True) and (sft_final_dir / "adapter_config.json").exists():
+    init_from_sft = config.get("grpo", {}).get("init_from_sft", True)
+    sft_adapter_present = (sft_final_dir / "adapter_config.json").exists()
+    if init_from_sft and sft_adapter_present:
         logger.info("Initializing GRPO from SFT adapter: %s", sft_final_dir)
         model = PeftModel.from_pretrained(model, str(sft_final_dir), is_trainable=True)
     elif model_cfg.get("use_lora", True):
+        if init_from_sft and not sft_adapter_present:
+            logger.warning(
+                "=" * 70 + "\n"
+                "GRPO is starting from the BASE model with a fresh LoRA adapter.\n"
+                "No SFT adapter was found at: %s\n"
+                "\n"
+                "Without an SFT-initialized policy that already knows the SWE-RL\n"
+                "output schema (<think>...</think><solution>...```search/replace```\n"
+                "</solution>), GRPO is very likely to produce only the format\n"
+                "penalty (-1.0) for every rollout, leading to zero advantage,\n"
+                "zero loss, and NaN gradients.\n"
+                "\n"
+                "Recommended: run the SFT baseline first:\n"
+                "    python run.py sft_train --config %s\n"
+                "then re-run GRPO. Or set grpo.init_from_sft=false to silence this.\n"
+                + "=" * 70,
+                sft_final_dir,
+                config_path,
+            )
         lora_cfg = model_cfg.get("lora", {})
         lora_config = LoraConfig(
             r=lora_cfg.get("r", 8),
