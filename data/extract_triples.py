@@ -139,6 +139,8 @@ def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[
 
         # Apply patch using git apply
         logger.debug(f"Applying patch ({len(patch_text)} bytes) in temp dir")
+
+        # Try standard git apply first
         result = subprocess.run(
             ["git", "apply"],
             input=patch_text.encode("utf-8"),
@@ -146,23 +148,46 @@ def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[
             capture_output=True,
         )
 
+        # If standard apply fails, try with 3-way merge (more lenient)
+        if result.returncode != 0:
+            logger.debug(f"Standard git apply failed, trying 3-way merge")
+            result = subprocess.run(
+                ["git", "apply", "--3way"],
+                input=patch_text.encode("utf-8"),
+                cwd=temp_dir,
+                capture_output=True,
+            )
+
+        # If 3-way fails, try with fuzzy matching
+        if result.returncode != 0:
+            logger.debug(f"3-way merge failed, trying fuzzy matching")
+            result = subprocess.run(
+                ["git", "apply", "--fuzz=2"],
+                input=patch_text.encode("utf-8"),
+                cwd=temp_dir,
+                capture_output=True,
+            )
+
         if result.returncode != 0:
             error_msg = result.stderr.decode("utf-8", errors="ignore")
-            logger.warning(f"git apply returned code {result.returncode}")
+            logger.warning(f"All patch application methods failed for {len(patch_text)} byte patch")
             logger.debug(f"stderr: {error_msg[:500]}")
             raise RuntimeError(f"git apply failed: {error_msg}")
 
-        # Read patched files
-        patched_files = {}
-        for filepath in original_files:
-            file_path = Path(temp_dir) / filepath
-            if file_path.exists():
-                patched_files[filepath] = file_path.read_text(encoding="utf-8")
-            else:
-                # File was deleted by patch
-                patched_files[filepath] = ""
-
-        return patched_files
+        # Determine which method worked
+        if result.returncode == 0:
+            # Check which method succeeded by checking if any changes were made
+            patched_files = {}
+            for filepath in original_files:
+                file_path = Path(temp_dir) / filepath
+                if file_path.exists():
+                    patched_files[filepath] = file_path.read_text(encoding="utf-8")
+                else:
+                    # File was deleted by patch
+                    patched_files[filepath] = ""
+            return patched_files
+        else:
+            raise RuntimeError(f"All patch application methods failed")
 
     finally:
         # Clean up
