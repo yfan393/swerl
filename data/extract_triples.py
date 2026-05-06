@@ -138,6 +138,7 @@ def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[
         )
 
         # Apply patch using git apply
+        logger.debug(f"Applying patch ({len(patch_text)} bytes) in temp dir")
         result = subprocess.run(
             ["git", "apply"],
             input=patch_text.encode("utf-8"),
@@ -147,6 +148,8 @@ def apply_unified_diff(original_files: dict[str, str], patch_text: str) -> dict[
 
         if result.returncode != 0:
             error_msg = result.stderr.decode("utf-8", errors="ignore")
+            logger.warning(f"git apply returned code {result.returncode}")
+            logger.debug(f"stderr: {error_msg[:500]}")
             raise RuntimeError(f"git apply failed: {error_msg}")
 
         # Read patched files
@@ -180,17 +183,19 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
     current_file = None
     current_content = []
     in_file_diff = False
+    diff_headers_found = 0
 
     for line in patch.split('\n'):
         # Match: diff --git a/path/to/file b/path/to/file
         if line.startswith('diff --git'):
+            diff_headers_found += 1
             # Save previous file if any
             if current_file is not None and current_content:
                 # Remove trailing empty lines from reconstruction
                 while current_content and current_content[-1] == '':
                     current_content.pop()
                 files[current_file] = '\n'.join(current_content)
-                logger.debug(f"Extracted {current_file}: {len(current_content)} lines")
+                logger.debug(f"Extracted {current_file}: {len(current_content)} lines, {len(''.join(current_content))} bytes")
 
             # Extract path: "a/path/to/file" -> "path/to/file"
             match = re.search(r'^diff --git a/(.+?) b/.+?$', line)
@@ -198,8 +203,9 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
                 current_file = match.group(1)
                 current_content = []
                 in_file_diff = True
-                logger.debug(f"Starting to parse file: {current_file}")
+                logger.debug(f"Found file #{diff_headers_found}: {current_file}")
             else:
+                logger.warning(f"Could not parse diff header: {line[:80]}")
                 current_file = None
                 in_file_diff = False
 
@@ -240,9 +246,11 @@ def extract_files_from_patch(patch: str) -> dict[str, str]:
         while current_content and current_content[-1] == '':
             current_content.pop()
         files[current_file] = '\n'.join(current_content)
-        logger.debug(f"Extracted {current_file}: {len(current_content)} lines")
+        logger.debug(f"Extracted {current_file}: {len(current_content)} lines, {len(''.join(current_content))} bytes")
 
-    logger.debug(f"Total files extracted from patch: {len(files)}")
+    logger.info(f"Extracted {len(files)} files from patch with {diff_headers_found} diff headers found")
+    for fpath, content in files.items():
+        logger.debug(f"  {fpath}: {len(content)} bytes, {len(content.splitlines())} lines")
     return files
 
 
@@ -281,28 +289,39 @@ def extract_triple(
     # then runs `git apply` on the full PR diff.
     try:
         patched_contents = apply_unified_diff(file_contents, oracle_patch)
+        logger.info(f"Successfully applied patch for {instance_id}: {len(patched_contents)} files patched")
     except Exception as e:
-        logger.debug(f"Patch application failed for {instance_id}: {e}")
+        logger.warning(f"Patch application failed for {instance_id}: {e}")
         return None
 
     # Only keep files that actually changed and have valid Python syntax
     oracle_new_content: dict[str, str] = {}
+    skipped_reasons = {"unchanged": 0, "syntax_error": 0, "whitespace_only": 0}
+
     for fpath, new_content in patched_contents.items():
         original = file_contents.get(fpath, "")
         if new_content == original:
+            logger.debug(f"Skipping {fpath}: content unchanged after patch")
+            skipped_reasons["unchanged"] += 1
             continue   # patch didn't touch this file
         if not check_syntax(new_content):
-            logger.debug(f"Skipping {fpath} in {instance_id}: broken syntax after patch")
+            logger.debug(f"Skipping {fpath}: broken syntax after patch")
+            logger.debug(f"  Original syntax valid: {check_syntax(original)}")
+            skipped_reasons["syntax_error"] += 1
             continue   # broken output — skip
-        if check_code_differ_by_just_empty_lines([new_content], [original]):
-            logger.debug(f"Skipping {fpath} in {instance_id}: only whitespace changes")
+        if check_code_differ_by_just_empty_lines(new_content, original):
+            logger.debug(f"Skipping {fpath}: only whitespace changes")
+            skipped_reasons["whitespace_only"] += 1
             continue   # trivial whitespace-only change — not useful for training
         oracle_new_content[fpath] = new_content
+        logger.info(f"Keeping {fpath}: {len(new_content)} chars, {len(original)} chars original")
 
     if not oracle_new_content:
         # Patch applied but produced no meaningful Python changes — skip
-        logger.debug(f"No meaningful changes for {instance_id} after patch application")
+        logger.warning(f"No meaningful changes for {instance_id}: {skipped_reasons}")
         return None
+
+    logger.info(f"Extracted {len(oracle_new_content)} meaningful files for {instance_id}")
 
     code_context = build_full_code_context(file_contents)
 
