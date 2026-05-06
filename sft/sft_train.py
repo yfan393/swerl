@@ -204,6 +204,14 @@ def train_sft(config_path: str):
     model.print_trainable_parameters()
     model.config.use_cache = False
 
+    # Enable gradient checkpointing if not using 4-bit
+    if not model_cfg.get("load_in_4bit", False):
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+
+    # Ensure model is in training mode
+    model.train()
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         max_steps=sft_cfg.get("max_steps", 2000),
