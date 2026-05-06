@@ -29,7 +29,12 @@ grpo:
   beta: 0.001
   clip_epsilon: 0.2
   max_steps: 50
-  per_device_train_batch_size: 1      # Memory optimization: 1 prompt × 2 generations = 2 total per step
+  # TRL constraint: generation_batch_size = per_device_train_batch_size *
+  # gradient_accumulation_steps * num_processes  must be divisible by num_generations.
+  # With num_generations=2, per_device_train_batch_size must be a multiple of 2.
+  # per_device_train_batch_size is the TOTAL (prompt × generation) samples per device,
+  # so 2 here = 1 unique prompt × 2 generations.
+  per_device_train_batch_size: 2      # 1 prompt × 2 generations = 2 total per step
   learning_rate: 1.0e-6
   lr_scheduler: "cosine"
   warmup_steps: 5

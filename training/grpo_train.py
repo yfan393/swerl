@@ -68,14 +68,41 @@ def train(config_path: str) -> None:
     max_steps = grpo_cfg.get("max_steps", 300)
     num_train_epochs = grpo_cfg.get("num_train_epochs", 1)
 
+    per_device_train_batch_size = grpo_cfg.get(
+        "per_device_train_batch_size",
+        config.get("training", {}).get("per_device_train_batch_size", 1),
+    )
+    num_generations = grpo_cfg.get("num_generations", 2)
+    gradient_accumulation_steps = grpo_cfg.get("gradient_accumulation_steps", 1)
+
+    # TRL's GRPOConfig requires:
+    #   generation_batch_size = per_device_train_batch_size
+    #                           * gradient_accumulation_steps
+    #                           * num_processes
+    # to be divisible by num_generations. We don't know num_processes here, but
+    # per_device_train_batch_size * gradient_accumulation_steps must already be a
+    # multiple of num_generations for any single-process or multi-process setup.
+    effective = per_device_train_batch_size * gradient_accumulation_steps
+    if effective % num_generations != 0:
+        raise ValueError(
+            f"GRPO config error: per_device_train_batch_size "
+            f"({per_device_train_batch_size}) * gradient_accumulation_steps "
+            f"({gradient_accumulation_steps}) = {effective}, which is not "
+            f"divisible by num_generations ({num_generations}). "
+            f"Increase per_device_train_batch_size or gradient_accumulation_steps "
+            f"to a multiple of num_generations. Note: per_device_train_batch_size "
+            f"in TRL counts TOTAL (prompt × generation) samples per device, so it "
+            f"must be at least num_generations for a single unique prompt per step."
+        )
+
     grpo_config = GRPOConfig(
         output_dir=output_dir,
         max_steps=max_steps,
         num_train_epochs=num_train_epochs,
-        per_device_train_batch_size=grpo_cfg.get("per_device_train_batch_size", config.get("training", {}).get("per_device_train_batch_size", 1)),
+        per_device_train_batch_size=per_device_train_batch_size,
         learning_rate=grpo_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 5e-5)),
-        num_generations=grpo_cfg.get("num_generations", 2),
-        gradient_accumulation_steps=grpo_cfg.get("gradient_accumulation_steps", 1),
+        num_generations=num_generations,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         logging_steps=grpo_cfg.get("logging_steps", 10),
         save_steps=grpo_cfg.get("save_steps", 100),
         report_to=log_cfg.get("report_to", "none"),
