@@ -88,12 +88,14 @@ def train(config_path: str) -> None:
         continuous_correctness=reward_cfg.get("continuous_correctness", True),
         use_matcher_correctness=reward_cfg.get("use_matcher_correctness", True),
     )
+    # Add __name__ attribute for GRPOTrainer logging
+    reward_fn.__name__ = "SWERLReward"
 
     trainer = GRPOTrainer(
         model=model,
         args=grpo_config,
         train_dataset=train_dataset,
-        reward_funcs=reward_fn,
+        reward_funcs=[reward_fn],
     )
     
     trainer.train()
