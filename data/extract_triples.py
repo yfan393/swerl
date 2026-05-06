@@ -195,7 +195,7 @@ def extract_triples(
 
     for split_name, split_data in [("train", train_triples), ("val", val_triples)]:
         out_file = output_path / f"{split_name}.jsonl"
-        write_jsonl(out_file, split_data)
+        write_jsonl(split_data, out_file)  # Fixed: records first, file_path second
         logger.info(f"Wrote {len(split_data)} records to {out_file}")
 
 

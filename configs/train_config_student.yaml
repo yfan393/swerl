@@ -42,8 +42,11 @@ grpo:
   logging_steps: 5
 
 reward:
-  alpha: 0.3
-  format_penalty: -1.0
+  alpha: 0.3                          # Correctness weight: 0.3 (70% similarity, 30% correctness)
+  format_penalty: -1.0                # Penalty for format errors
+  use_matcher_correctness: true       # Use SequenceMatcher for continuous correctness (recommended)
+                                      # If false: uses binary syntax/lint checks
+  continuous_correctness: true        # Legacy: use continuous scoring (ignored if use_matcher_correctness=true)
 
 rag:
   top_k: 3

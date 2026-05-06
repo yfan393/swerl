@@ -136,29 +136,88 @@ DEFAULT_ALPHA = 0.3
 FORMAT_PENALTY = -1.0
 PLAYGROUND_DIR = os.getenv("PLAYGROUND_DIR", "playground")
 
+# Import difflib for continuous correctness scoring
+import difflib
+
+
+def compute_patch_similarity_correctness(
+    code_context: dict,
+    pred_new_content: dict,
+    oracle_new_content: dict,
+) -> tuple:
+    """
+    Compute continuous correctness score using SequenceMatcher.
+
+    Measures how similar the predicted changes are to the oracle (ground truth).
+    This gives partial credit for patches that are "close" to correct.
+
+    Returns:
+        (correctness_score in [0, 1], metadata)
+
+    Scoring:
+        - 0.0: No changes or completely wrong
+        - 0.3-0.7: Partial changes in right direction
+        - 1.0: Matches oracle exactly
+    """
+    meta = {}
+
+    if not pred_new_content:
+        return 0.0, {"error": "No predicted content"}
+
+    similarities = []
+
+    # Compare each predicted file against oracle
+    for path, pred_content in pred_new_content.items():
+        oracle_content = oracle_new_content.get(path, "")
+
+        # Use SequenceMatcher to compute similarity
+        matcher = difflib.SequenceMatcher(None, oracle_content, pred_content)
+        similarity = matcher.ratio()  # Returns [0, 1]
+        similarities.append(similarity)
+
+        meta[f"{path}_similarity"] = similarity
+
+    if not similarities:
+        return 0.0, {"error": "No files to compare"}
+
+    # Average similarity across all modified files
+    avg_similarity = sum(similarities) / len(similarities)
+
+    meta["patch_similarity_correctness"] = avg_similarity
+    meta["num_files_compared"] = len(similarities)
+
+    return avg_similarity, meta
+
 
 def check_correctness(
     code_context: dict,
     pred_new_content: dict,
     use_git_apply: bool = True,
     use_lint: bool = True,
+    continuous: bool = True,
 ) -> tuple:
     """
-    Check whether the predicted file changes are correct in a syntactic sense.
+    Check whether the predicted file changes are correct.
 
-    Returns (score in {0.0, 1.0}, metadata).
+    Returns (score, metadata).
 
-    Correctness conditions (all must hold):
-        1. At least one file was actually changed
-        2. Every modified file produces valid Python syntax
-        3. The changes are not merely empty-line additions
-        4. No new flake8 fatal errors introduced  (if use_lint=True)
+    If continuous=True (default):
+        Returns continuous score in [0, 1] with partial credit.
+    If continuous=False:
+        Returns binary score in {0.0, 1.0} (original behavior).
+
+    Continuous scoring (recommended per SWE-RL paper):
+        0.00 - No files modified or only trivial changes
+        0.25 - Files changed but syntax errors present
+        0.50 - Syntax OK but lint errors present
+        0.75 - Syntax + lint OK but other minor issues
+        1.00 - Fully correct (no syntax/lint/format errors)
     """
     meta = {"correctness_checks": {}}
 
     if not pred_new_content:
         meta["correctness_error"] = "No files modified"
-        return 0.0, meta
+        return (0.0, meta) if not continuous else (0.0, meta)
 
     modified_files = {}
     for path, new_content in pred_new_content.items():
@@ -170,7 +229,7 @@ def check_correctness(
     if not modified_files:
         meta["correctness_error"] = "Predicted content identical to original (no-op)"
         meta["correctness_checks"]["changed"] = False
-        return 0.0, meta
+        return (0.0, meta) if not continuous else (0.0, meta)
     meta["correctness_checks"]["changed"] = True
 
     # Check 2: Not just empty-line changes
@@ -179,8 +238,11 @@ def check_correctness(
     if check_code_differ_by_just_empty_lines(new_codes, originals):
         meta["correctness_error"] = "Only empty-line differences (trivial patch)"
         meta["correctness_checks"]["non_trivial"] = False
-        return 0.0, meta
+        return (0.0, meta) if not continuous else (0.0, meta)
     meta["correctness_checks"]["non_trivial"] = True
+
+    # Starting score for continuous mode
+    score = 0.25 if continuous else 0.0
 
     # Check 3: Valid Python syntax for modified Python files.
     syntax_errors = []
@@ -191,14 +253,21 @@ def check_correctness(
             ast.parse(new_content)
         except SyntaxError as e:
             syntax_errors.append(f"{path}: line {e.lineno}: {e.msg}")
+
     if syntax_errors:
         meta["correctness_error"] = "Syntax errors: " + "; ".join(syntax_errors)
         meta["correctness_checks"]["syntax_ok"] = False
-        return 0.0, meta
-    meta["correctness_checks"]["syntax_ok"] = True
+        if not continuous:
+            return 0.0, meta
+        # Continuous: partial credit for valid attempt
+        score = 0.25
+        meta["correctness_score_intermediate"] = score
+    else:
+        meta["correctness_checks"]["syntax_ok"] = True
+        score = 0.5 if continuous else 1.0
 
     # Check 4: No new flake8 fatal errors (optional, requires flake8)
-    if use_lint:
+    if use_lint and not syntax_errors:  # Only check lint if syntax is OK
         lint_errors = []
         for path, (old_content, new_content) in modified_files.items():
             filename = Path(path).name
@@ -213,13 +282,20 @@ def check_correctness(
             except Exception as e:
                 # flake8 might not be installed; skip gracefully
                 logger.debug(f"lint_code failed for {path}: {e}")
+
         if lint_errors:
             meta["correctness_error"] = "New lint errors: " + "; ".join(lint_errors)
             meta["correctness_checks"]["lint_ok"] = False
-            return 0.0, meta
-    meta["correctness_checks"]["lint_ok"] = True
+            if not continuous:
+                return 0.0, meta
+            # Continuous: syntax OK, but lint issues = 0.5-0.75
+            score = 0.75 if continuous else 0.0
+            meta["correctness_score_intermediate"] = score
+        else:
+            meta["correctness_checks"]["lint_ok"] = True
+            score = 1.0
 
-    return 1.0, meta
+    return score, meta
 
 
 def calculate_combined_reward(
@@ -228,6 +304,8 @@ def calculate_combined_reward(
     output: str,
     alpha: float = DEFAULT_ALPHA,
     use_lint: bool = True,
+    continuous_correctness: bool = True,
+    use_matcher_correctness: bool = True,
 ) -> tuple:
     """
     Full combined reward for a single rollout output.
@@ -235,12 +313,22 @@ def calculate_combined_reward(
     R(o) = -1                               if format error
     R(o) = alpha * correctness + (1-alpha) * sim    otherwise
 
+    Correctness scoring modes (recommended: use_matcher_correctness=True):
+    - use_matcher_correctness=True (default):
+        Continuous [0, 1] using SequenceMatcher similarity to oracle.
+        Rewards patches that are "close" to correct.
+    - use_matcher_correctness=False:
+        Binary {0, 1} based on syntax/lint checks.
+        All-or-nothing scoring.
+
     Args:
-        code_context       : {path: original_content} before patch
-        oracle_new_content : {path: patched_content}  ground truth
-        output             : Raw LLM string (<think>...</think><solution>...</solution>)
-        alpha              : Correctness weight (0 = pure similarity)
-        use_lint           : Whether to run flake8 in correctness check
+        code_context          : {path: original_content} before patch
+        oracle_new_content    : {path: patched_content}  ground truth
+        output                : Raw LLM string (<think>...</think><solution>...</solution>)
+        alpha                 : Correctness weight (0 = pure similarity, 1 = pure correctness)
+        use_lint              : Whether to run flake8 in correctness check (ignored if use_matcher_correctness=True)
+        continuous_correctness: Legacy parameter (ignored if use_matcher_correctness=True)
+        use_matcher_correctness: Use SequenceMatcher for continuous correctness (recommended)
 
     Returns:
         (reward, metadata)  where reward in {-1} union [0, 1]
@@ -264,12 +352,25 @@ def calculate_combined_reward(
     except FormatError:
         return FORMAT_PENALTY, {"error": "re-parse failed after sim_score >= 0"}
 
-    # Step 4: Correctness
-    correctness_score, correctness_meta = check_correctness(
-        code_context=code_context,
-        pred_new_content=pred_new_content,
-        use_lint=use_lint,
-    )
+    # Step 4: Correctness scoring
+    if use_matcher_correctness:
+        # NEW: Use SequenceMatcher for continuous correctness
+        # This measures how similar predicted changes are to oracle
+        correctness_score, correctness_meta = compute_patch_similarity_correctness(
+            code_context=code_context,
+            pred_new_content=pred_new_content,
+            oracle_new_content=oracle_new_content,
+        )
+        correctness_mode = "patch_similarity"
+    else:
+        # OLD: Use syntax/lint checks for binary correctness
+        correctness_score, correctness_meta = check_correctness(
+            code_context=code_context,
+            pred_new_content=pred_new_content,
+            use_lint=use_lint,
+            continuous=continuous_correctness,
+        )
+        correctness_mode = "syntax_lint"
 
     # Step 5: Combine
     reward = alpha * correctness_score + (1.0 - alpha) * sim_score
@@ -279,6 +380,7 @@ def calculate_combined_reward(
         **correctness_meta,
         "sim_score": sim_score,
         "correctness_score": correctness_score,
+        "correctness_mode": correctness_mode,
         "alpha": alpha,
         "combined_reward": reward,
     }
@@ -290,11 +392,20 @@ def calculate_rewards_batch(
     oracle_new_content: dict,
     outputs: list,
     alpha: float = DEFAULT_ALPHA,
+    continuous_correctness: bool = True,
+    use_matcher_correctness: bool = True,
 ) -> tuple:
     """Compute combined rewards for a batch of G rollouts (one problem)."""
     rewards, metas = [], []
     for output in outputs:
-        r, m = calculate_combined_reward(code_context, oracle_new_content, output, alpha)
+        r, m = calculate_combined_reward(
+            code_context,
+            oracle_new_content,
+            output,
+            alpha,
+            continuous_correctness=continuous_correctness,
+            use_matcher_correctness=use_matcher_correctness,
+        )
         rewards.append(r)
         metas.append(m)
     return rewards, metas
@@ -310,11 +421,23 @@ class SWERLRewardFunction:
     The dataset must include columns:
         code_context        (JSON-encoded {path: original_content})
         oracle_new_content  (JSON-encoded {path: patched_content})
+
+    Reward can be:
+    - Discrete: {-1, 0, sim_score} where correctness is 0 or 1
+    - Continuous (recommended): {-1} ∪ [0, 1] where correctness ∈ [0, 1]
     """
 
-    def __init__(self, alpha: float = DEFAULT_ALPHA, use_lint: bool = True):
+    def __init__(
+        self,
+        alpha: float = DEFAULT_ALPHA,
+        use_lint: bool = True,
+        continuous_correctness: bool = True,
+        use_matcher_correctness: bool = True,
+    ):
         self.alpha = alpha
         self.use_lint = use_lint
+        self.continuous_correctness = continuous_correctness
+        self.use_matcher_correctness = use_matcher_correctness
 
     @staticmethod
     def _coerce_list(value, n: int) -> list:
@@ -394,6 +517,8 @@ class SWERLRewardFunction:
                     output=self._completion_to_text(completion),
                     alpha=self.alpha,
                     use_lint=self.use_lint,
+                    continuous_correctness=self.continuous_correctness,
+                    use_matcher_correctness=self.use_matcher_correctness,
                 )
             except Exception as e:
                 logger.warning("Reward failed for completion %s: %s", idx, e)

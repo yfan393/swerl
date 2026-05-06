@@ -54,9 +54,12 @@ grpo:
 
 reward:
   # Combined reward: alpha * correctness + (1 - alpha) * similarity
-  alpha: 0.3          # weight for correctness term
-  # Penalty for format errors
-  format_penalty: -1.0
+  alpha: 0.3                          # Correctness weight (0.3 = 70% similarity, 30% correctness)
+  format_penalty: -1.0                # Penalty for format errors
+  use_matcher_correctness: true       # Use SequenceMatcher for continuous correctness (RECOMMENDED)
+                                      # Measures how similar predicted changes are to oracle
+                                      # If false: uses binary syntax/lint checks (legacy)
+  continuous_correctness: true        # Legacy: use continuous scoring (ignored if use_matcher_correctness=true)
 
 rag:
   # Number of code chunks to retrieve per issue

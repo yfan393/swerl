@@ -216,7 +216,7 @@ def build_index(
 
     for i, chunk in enumerate(all_chunks):
         chunk["chunk_id"] = i
-    write_jsonl(chunk_meta_path_obj, all_chunks)
+    write_jsonl(all_chunks, chunk_meta_path_obj)  # Fixed: records first, file_path second
     logger.info(f"Saved {len(all_chunks)} chunk records to {chunk_meta_path}")
 
 

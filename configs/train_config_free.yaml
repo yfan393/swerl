@@ -69,8 +69,10 @@ grpo:
   logging_steps: 10
 
 reward:
-  alpha: 0.3                # correctness weight (same as full-scale)
+  alpha: 0.3                          # Correctness weight (same as full-scale)
   format_penalty: -1.0
+  use_matcher_correctness: true       # Use SequenceMatcher for continuous correctness (RECOMMENDED)
+  continuous_correctness: true        # Legacy: use continuous scoring
 
 rag:
   top_k: 5                  # was 8; fewer chunks → shorter context
