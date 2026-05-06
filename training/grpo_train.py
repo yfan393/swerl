@@ -72,7 +72,10 @@ def train(config_path: str) -> None:
         per_device_train_batch_size=config.get("training", {}).get("per_device_train_batch_size", 32),
         learning_rate=config.get("training", {}).get("learning_rate", 5e-5),
     )
-    
+
+    # Load reward config
+    reward_cfg = config.get("reward", {})
+
     # Train
     # Convert list of dicts to HuggingFace Dataset
     train_dataset = Dataset.from_list(records)
